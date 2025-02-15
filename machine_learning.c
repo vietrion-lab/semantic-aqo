@@ -38,7 +38,9 @@ const double	learning_rate = 1e-1;
 
 static double fs_distance(double *a, double *b, int len);
 static double fs_similarity(double dist);
-static double compute_weights(double *distances, int nrows, double *w, int *idx);
+static void compute_weights(double *distances, int nrows, int max_k, double *w, double *w_sum, int *idx);
+static double ADK_function(double x, double m);
+static int compute_adaptive_k(OkNNrdata *data, int max_k, double *w_sum, double *w, int *idx);
 
 
 OkNNrdata*
@@ -87,6 +89,41 @@ fs_similarity(double dist)
 	return 1.0 / (0.001 + dist);
 }
 
+static double
+ADK_function(double x, double m)
+{
+	if (x > 2.0)
+		x = 2.0;
+
+	return (1.0 / (1.0 + exp(m - intercept * x)));
+}
+
+static int
+compute_adaptive_k(OkNNrdata *data, int max_k, double *w_sum, double *w, int *idx)
+{
+	int		i;
+	int		k;
+	double 	error = 0;
+	double	y_pred = 0;
+	double 	m;
+
+	/* Find y_pred of aqo_k nearest neighbors */
+	for (i = 0; i < aqo_k; ++i)
+		if (idx[i] != -1)
+			y_pred += data->targets[idx[i]] * w[i] / w_sum[aqo_k - 1];
+
+	/* Find error based on aqo_k nearest neighbors */
+	for (i = 0; i < aqo_k; ++i)
+		if (idx[i] != -1)
+			error += (y_pred - data->targets[idx[i]]) * (y_pred - data->targets[idx[i]]);
+	error /= aqo_k;
+
+	m = max_k / 4.0 + 2.0;
+	k = round(aqo_k + (max_k - aqo_k) * ADK_function(error, m));
+
+	return k;
+}
+
 /*
  * Compute weights necessary for both prediction and learning.
  * Creates and returns w, w_sum and idx based on given distances ad matrix_rows.
@@ -94,25 +131,27 @@ fs_similarity(double dist)
  * Appeared as a separate function because of "don't repeat your code"
  * principle.
  */
-static double
-compute_weights(double *distances, int nrows, double *w, int *idx)
+static void
+compute_weights(double *distances, int nrows, int max_k, double *w, double *w_sum, int *idx)
 {
 	int		i,
 			j;
 	int		to_insert,
 			tmp;
-	double	w_sum = 0;
 
-	for (i = 0; i < aqo_k; ++i)
+	for (i = 0; i < max_k; ++i)
+	{
 		idx[i] = -1;
+		w_sum[i] = 0.0;
+	}
 
 	/* Choose from all neighbors only several nearest objects */
 	for (i = 0; i < nrows; ++i)
-		for (j = 0; j < aqo_k; ++j)
+		for (j = 0; j < max_k; ++j)
 			if (idx[j] == -1 || distances[i] < distances[idx[j]])
 			{
 				to_insert = i;
-				for (; j < aqo_k; ++j)
+				for (; j < max_k; ++j)
 				{
 					tmp = idx[j];
 					idx[j] = to_insert;
@@ -122,12 +161,17 @@ compute_weights(double *distances, int nrows, double *w, int *idx)
 			}
 
 	/* Compute weights by the nearest neighbors distances */
-	for (j = 0; j < aqo_k && idx[j] != -1; ++j)
+	if (idx[0] != -1)
+	{
+		w[0] = fs_similarity(distances[idx[0]]);
+		w_sum[0] = w[0];
+	}
+
+	for (j = 1; j < max_k && idx[j] != -1; ++j)
 	{
 		w[j] = fs_similarity(distances[idx[j]]);
-		w_sum += w[j];
+		w_sum[j] = w_sum[j - 1] + w[j];
 	}
-	return w_sum;
 }
 
 /*
@@ -143,8 +187,10 @@ OkNNr_predict(OkNNrdata *data, double *features)
 	int		i;
 	int		idx[aqo_K]; /* indexes of nearest neighbors */
 	double	w[aqo_K];
-	double	w_sum;
+	double	w_sum[aqo_K];
 	double	result = 0.;
+	int		adaptive_k;
+	int		max_k;
 
 	Assert(data != NULL);
 
@@ -152,14 +198,26 @@ OkNNr_predict(OkNNrdata *data, double *features)
 		return -1.;
 	Assert(data->rows > 0);
 
+	if (data->rows > MAX_K)
+		max_k = MAX_K;
+	else if (data->rows < aqo_k)
+		max_k = aqo_k;
+	else
+		max_k = data->rows;
+
 	for (i = 0; i < data->rows; ++i)
 		distances[i] = fs_distance(data->matrix[i], features, data->cols);
 
-	w_sum = compute_weights(distances, data->rows, w, idx);
+	compute_weights(distances, data->rows, max_k, w, w_sum, idx);
 
-	for (i = 0; i < aqo_k; ++i)
+	if (max_k > aqo_k) 
+		adaptive_k = compute_adaptive_k(data, max_k, w_sum, w, idx);
+	else
+		adaptive_k = max_k;
+
+	for (i = 0; i < adaptive_k; ++i)
 		if (idx[i] != -1)
-			result += data->targets[idx[i]] * w[i] / w_sum;
+			result += data->targets[idx[i]] * w[i] / w_sum[(data->rows <= MAX_K) ? data->rows - 1 : MAX_K - 1];
 
 	if (result < 0.)
 		result = 0.;
@@ -248,8 +306,16 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 		double	tc_coef; /* Target correction coefficient */
 		double	fc_coef; /* Feature correction coefficient */
 		double	w[aqo_K];
-		double	w_sum;
+		double	w_sum[MAX_K];
+		int		adaptive_k;
+		int		max_k;
 
+		if (data->rows > MAX_K)
+			max_k = MAX_K;
+		else
+			max_k = data->rows;
+
+		adaptive_k = compute_adaptive_k(data, max_k, w_sum, w, idx);
 		/*
 		 * We reaches limit of stored neighbors and can't simply add new line
 		 * at the matrix. Also, we can't simply delete one of the stored
@@ -261,7 +327,7 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 		 * idx array. Compute weight for each nearest neighbor and total weight
 		 * of all nearest neighbor.
 		 */
-		w_sum = compute_weights(distances, data->rows, w, idx);
+		compute_weights(distances, data->rows, max_k, w, w_sum, idx);
 
 		/*
 		 * Compute average value for target by nearest neighbors. We need to
@@ -271,12 +337,12 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 		 * this superposition value (with linear smoothing).
 		 * fc_coef - feature changing rate.
 		 * */
-		for (i = 0; i < aqo_k && idx[i] != -1; ++i)
-			avg_target += data->targets[idx[i]] * w[i] / w_sum;
+		for (i = 0; i < adaptive_k && idx[i] != -1; ++i)
+			avg_target += data->targets[idx[i]] * w[i] / w_sum[adaptive_k];
 		tc_coef = learning_rate * (avg_target - target);
 
 		/* Modify targets and features of each nearest neighbor row. */
-		for (i = 0; i < aqo_k && idx[i] != -1; ++i)
+		for (i = 0; i < adaptive_k && idx[i] != -1; ++i)
 		{
 			double lr = learning_rate * rfactor / data->rfactors[mid];
 
@@ -290,9 +356,9 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 			Assert(data->rfactors[mid] > 0. && data->rfactors[mid] <= 1.);
 
 			fc_coef = tc_coef * lr * (data->targets[idx[i]] - avg_target) *
-										w[i] * w[i] / sqrt(data->cols) / w_sum;
+										w[i] * w[i] / sqrt(data->cols) / w_sum[adaptive_k];
 
-			data->targets[idx[i]] -= tc_coef * lr * w[i] / w_sum;
+			data->targets[idx[i]] -= tc_coef * lr * w[i] / w_sum[adaptive_k];
 			for (j = 0; j < data->cols; ++j)
 			{
 				feature = data->matrix[idx[i]];
