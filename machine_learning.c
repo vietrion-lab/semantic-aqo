@@ -217,7 +217,7 @@ OkNNr_predict(OkNNrdata *data, double *features)
 
 	for (i = 0; i < adaptive_k; ++i)
 		if (idx[i] != -1)
-			result += data->targets[idx[i]] * w[i] / w_sum[(data->rows <= MAX_K) ? data->rows - 1 : MAX_K - 1];
+			result += data->targets[idx[i]] * w[i] / w_sum[(data->rows < adaptive_k) ? data->rows - 1 : adaptive_k - 1];
 
 	if (result < 0.)
 		result = 0.;
@@ -306,28 +306,26 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 		double	tc_coef; /* Target correction coefficient */
 		double	fc_coef; /* Feature correction coefficient */
 		double	w[aqo_K];
-		double	w_sum[MAX_K];
+		double	w_sum[aqo_K];
 		int		adaptive_k;
 		int		max_k;
 
-		if (data->rows > MAX_K)
-			max_k = MAX_K;
-		else
-			max_k = data->rows;
+		max_k = MAX_K;
 
-		adaptive_k = compute_adaptive_k(data, max_k, w_sum, w, idx);
 		/*
 		 * We reaches limit of stored neighbors and can't simply add new line
 		 * at the matrix. Also, we can't simply delete one of the stored
 		 * neighbors.
 		 */
 
+		compute_weights(distances, data->rows, max_k, w, w_sum, idx);
+		adaptive_k = compute_adaptive_k(data, max_k, w_sum, w, idx);
+
 		/*
 		 * Select nearest neighbors for the new object. store its indexes in
 		 * idx array. Compute weight for each nearest neighbor and total weight
 		 * of all nearest neighbor.
 		 */
-		compute_weights(distances, data->rows, max_k, w, w_sum, idx);
 
 		/*
 		 * Compute average value for target by nearest neighbors. We need to
@@ -337,8 +335,9 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 		 * this superposition value (with linear smoothing).
 		 * fc_coef - feature changing rate.
 		 * */
+
 		for (i = 0; i < adaptive_k && idx[i] != -1; ++i)
-			avg_target += data->targets[idx[i]] * w[i] / w_sum[adaptive_k];
+			avg_target += data->targets[idx[i]] * w[i] / w_sum[adaptive_k - 1];
 		tc_coef = learning_rate * (avg_target - target);
 
 		/* Modify targets and features of each nearest neighbor row. */
@@ -356,14 +355,41 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 			Assert(data->rfactors[mid] > 0. && data->rfactors[mid] <= 1.);
 
 			fc_coef = tc_coef * lr * (data->targets[idx[i]] - avg_target) *
-										w[i] * w[i] / sqrt(data->cols) / w_sum[adaptive_k];
+										w[i] * w[i] / sqrt(data->cols) / w_sum[adaptive_k - 1];
 
-			data->targets[idx[i]] -= tc_coef * lr * w[i] / w_sum[adaptive_k];
+			data->targets[idx[i]] -= tc_coef * lr * w[i] / w_sum[adaptive_k - 1];
+			
+			if (isnan(data->targets[idx[i]])) {
+				elog(WARNING, "CATCHED NaN in features, tc_coef is %f", tc_coef);
+				for (int t = 0; t < adaptive_k; ++ t)
+					elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
+			}
+			if (isinf(data->targets[idx[i]])) {
+				elog(WARNING, "CATCHED Inf in features, w_sum is %f, tc_coef is %f", w_sum[adaptive_k - 1], tc_coef);
+
+				for (int t = 0; t < adaptive_k; ++ t)
+					elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
+			}
+
 			for (j = 0; j < data->cols; ++j)
 			{
 				feature = data->matrix[idx[i]];
 				feature[j] -= fc_coef * (features[j] - feature[j]) /
 					distances[idx[i]];
+
+				if (isnan(data->matrix[idx[i]][j])) {
+					elog(WARNING, "CATCHED NaN in features, w_sum is %f, tc_coef is %f", w_sum[adaptive_k - 1], tc_coef);
+					for (int t = 0; t < adaptive_k; ++ t)
+						elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
+
+
+				}
+				if (isinf(data->matrix[idx[i]][j])) {
+					elog(WARNING, "CATCHED Inf in features, w_sum is %f, tc_coef is %f", w_sum[adaptive_k - 1], tc_coef);
+					for (int t = 0; t < adaptive_k; ++ t)
+						elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
+				}
+
 			}
 		}
 	}
