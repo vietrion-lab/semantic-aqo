@@ -10,8 +10,7 @@ extern const double learning_rate;
 #define RELIABILITY_MIN		(0.1)
 #define RELIABILITY_MAX		(1.0)
 #define BETA				(0.99)
-#define MAX_K				(7)
-#define intercept					(4)
+#define MAX_K				(12)
 
 typedef struct OkNNrdata
 {

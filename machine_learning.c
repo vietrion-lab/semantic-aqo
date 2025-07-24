@@ -24,7 +24,6 @@
 #include "aqo.h"
 #include "machine_learning.h"
 
-
 /*
  * This parameter tell us that the new learning sample object has very small
  * distance from one whose features stored in matrix already.
@@ -39,7 +38,7 @@ const double	learning_rate = 1e-1;
 static double fs_distance(double *a, double *b, int len);
 static double fs_similarity(double dist);
 static void compute_weights(double *distances, int nrows, int max_k, double *w, double *w_sum, int *idx);
-static double ADK_function(double x, double m);
+static double ADK_function(double x);
 static int compute_adaptive_k(OkNNrdata *data, int max_k, double *w_sum, double *w, int *idx);
 
 
@@ -90,38 +89,47 @@ fs_similarity(double dist)
 }
 
 static double
-ADK_function(double x, double m)
+ADK_function(double x)
 {
 	if (x > 2.0)
 		x = 2.0;
 
-	return (1.0 / (1.0 + exp(m - intercept * x)));
+	return (1.0 + tanh(7 * x - 2.5)) / 2.0;
 }
 
 static int
 compute_adaptive_k(OkNNrdata *data, int max_k, double *w_sum, double *w, int *idx)
 {
-	int		i;
-	int		k;
-	double 	error = 0;
-	double	y_pred = 0;
-	double 	m;
+    int		i;
+    int		k;
+    double 	error = 0;
+    double	y_pred = 0;
+    int		actual_neighbors = 0;
+    
+    /* Count actual neighbors and find the appropriate w_sum index */
+    for (i = 0; i < aqo_k && idx[i] != -1; ++i)
+        actual_neighbors++;
+    
+    /* If no neighbors or insufficient data, return max_k */
+    if (actual_neighbors == 0 || w_sum[actual_neighbors - 1] == 0.0)
+        return max_k;
 
-	/* Find y_pred of aqo_k nearest neighbors */
-	for (i = 0; i < aqo_k; ++i)
-		if (idx[i] != -1)
-			y_pred += data->targets[idx[i]] * w[i] / w_sum[aqo_k - 1];
+    /* Find y_pred of actual nearest neighbors */
+    for (i = 0; i < actual_neighbors; ++i)
+        if (idx[i] != -1)
+            y_pred += data->targets[idx[i]] * w[i] / w_sum[actual_neighbors - 1];
 
-	/* Find error based on aqo_k nearest neighbors */
-	for (i = 0; i < aqo_k; ++i)
-		if (idx[i] != -1)
-			error += (y_pred - data->targets[idx[i]]) * (y_pred - data->targets[idx[i]]);
-	error /= aqo_k;
+    /* Find error based on actual nearest neighbors */
+    for (i = 0; i < actual_neighbors; ++i)
+        if (idx[i] != -1)
+            error += (y_pred - data->targets[idx[i]]) * (y_pred - data->targets[idx[i]]);
+    
+    /* Divide by actual number of neighbors */
+    error /= actual_neighbors;
 
-	m = max_k / 4.0 + 2.0;
-	k = round(aqo_k + (max_k - aqo_k) * ADK_function(error, m));
+    k = round(aqo_k + (max_k - aqo_k) * ADK_function(error));
 
-	return k;
+    return k;
 }
 
 /*
@@ -347,6 +355,7 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 
 			if (lr > 1.)
 			{
+				// elog(WARNING, "[AQO] Something goes wrong in the ML core: learning rate = %lf", lr);
 				elog(WARNING, "[AQO] Something goes wrong in the ML core: learning rate = %lf", lr);
 				lr = 1.;
 			}
@@ -358,38 +367,11 @@ OkNNr_learn(OkNNrdata *data, double *features, double target, double rfactor)
 										w[i] * w[i] / sqrt(data->cols) / w_sum[adaptive_k - 1];
 
 			data->targets[idx[i]] -= tc_coef * lr * w[i] / w_sum[adaptive_k - 1];
-			
-			if (isnan(data->targets[idx[i]])) {
-				elog(WARNING, "CATCHED NaN in features, tc_coef is %f", tc_coef);
-				for (int t = 0; t < adaptive_k; ++ t)
-					elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
-			}
-			if (isinf(data->targets[idx[i]])) {
-				elog(WARNING, "CATCHED Inf in features, w_sum is %f, tc_coef is %f", w_sum[adaptive_k - 1], tc_coef);
-
-				for (int t = 0; t < adaptive_k; ++ t)
-					elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
-			}
-
 			for (j = 0; j < data->cols; ++j)
 			{
 				feature = data->matrix[idx[i]];
 				feature[j] -= fc_coef * (features[j] - feature[j]) /
 					distances[idx[i]];
-
-				if (isnan(data->matrix[idx[i]][j])) {
-					elog(WARNING, "CATCHED NaN in features, w_sum is %f, tc_coef is %f", w_sum[adaptive_k - 1], tc_coef);
-					for (int t = 0; t < adaptive_k; ++ t)
-						elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
-
-
-				}
-				if (isinf(data->matrix[idx[i]][j])) {
-					elog(WARNING, "CATCHED Inf in features, w_sum is %f, tc_coef is %f", w_sum[adaptive_k - 1], tc_coef);
-					for (int t = 0; t < adaptive_k; ++ t)
-						elog(WARNING, "w_sum[%d] = %f", t, w_sum[t]);
-				}
-
 			}
 		}
 	}
