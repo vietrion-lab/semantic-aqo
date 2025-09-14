@@ -11,3 +11,5 @@ tags
 # Generated subdirectories
 /log/
 /tmp_check/
+venv
+__pycache__
