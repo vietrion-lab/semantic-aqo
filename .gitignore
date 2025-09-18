@@ -13,3 +13,4 @@ tags
 /tmp_check/
 venv
 __pycache__
+*.csv
