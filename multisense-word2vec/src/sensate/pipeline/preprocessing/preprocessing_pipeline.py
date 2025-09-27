@@ -214,28 +214,28 @@ class PreprocessingPipeline:
         """Process a batch of queries."""
         return [self.tokenize(query) for query in batch]
 
-if __name__ == "__main__":
-    pipeline = PreprocessingPipeline()
+# if __name__ == "__main__":
+#     pipeline = PreprocessingPipeline()
     
-    # Test cases matching the diagram
-    test_queries = [
-        "DELETE FROM Employees WHERE EmployeeID = 2;",
-        "SELECT u.name, SUM(o.amount) AS total FROM users u JOIN orders o ON u.user_id = o.id WHERE u.age >= 21",
-        "UPDATE products SET price = 99.99 WHERE category = 'electronics'",
-        "INSERT INTO customers VALUES (1, 'John Doe', '2023-01-15')",
-        """SELECT u.name, SUM(o.amount) AS total
-FROM users u
-JOIN orders o ON o.user_id = u.id
-WHERE u.age >= 21 AND o.status IN ('paid','shipped')
-GROUP BY u.name
-ORDER BY total DESC"""
-    ]
+#     # Test cases matching the diagram
+#     test_queries = [
+#         "DELETE FROM Employees WHERE EmployeeID = 2;",
+#         "SELECT u.name, SUM(o.amount) AS total FROM users u JOIN orders o ON u.user_id = o.id WHERE u.age >= 21",
+#         "UPDATE products SET price = 99.99 WHERE category = 'electronics'",
+#         "INSERT INTO customers VALUES (1, 'John Doe', '2023-01-15')",
+#         """SELECT u.name, SUM(o.amount) AS total
+# FROM users u
+# JOIN orders o ON o.user_id = u.id
+# WHERE u.age >= 21 AND o.status IN ('paid','shipped')
+# GROUP BY u.name
+# ORDER BY total DESC"""
+#     ]
     
-    print("=== Clean SQL Preprocessing Pipeline ===\n")
+#     print("=== Clean SQL Preprocessing Pipeline ===\n")
     
-    for i, query in enumerate(test_queries, 1):
-        print(f"Test {i}: {query}")
-        tokens = pipeline.tokenize(query)
-        print(f"Result:  {' '.join(tokens)}")
-        print(f"Tokens:  {tokens}")
-        print("-" * 70)
+#     for i, query in enumerate(test_queries, 1):
+#         print(f"Test {i}: {query}")
+#         tokens = pipeline.tokenize(query)
+#         print(f"Result:  {' '.join(tokens)}")
+#         print(f"Tokens:  {tokens}")
+#         print("-" * 70)
