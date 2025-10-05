@@ -4,3 +4,5 @@ pydantic_core==2.33.2
 PyYAML==6.0.2
 typing-inspection==0.4.1
 typing_extensions==4.15.0
+torch>=2.0.0
+transformers>
