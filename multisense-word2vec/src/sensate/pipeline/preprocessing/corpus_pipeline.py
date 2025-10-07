@@ -1,5 +1,5 @@
-from typing import List
-
+from typing import List, Dict
+from sensate.pipeline.preprocessing.bert_extractor import BERTExtractor
 
 class PairGenerator:
     # Generate center-context pairs for Word2Vec training
@@ -30,34 +30,54 @@ class PairGenerator:
 
 
 class BERTEmbeddingGenerator:
-    # TODO: AQO-8
     def __init__(self):
-        pass
+        self.extractor = BERTExtractor()
 
-    def __call__(self, corpus: list) -> list:
-        pass
-    
+    def __call__(self, corpus: List[List[str]]) -> List[Dict[str, list]]:
+        """
+        For each sentence in corpus:
+            - Mask each token one by one.
+            - Use BERTExtractor to extract embedding for the masked token.
+        Output:
+            List[Dict[token, embedding_vector]]
+        """
+        embeddings_list = []
+
+        for sentence in corpus:
+            embeddings_dict = {}
+            for i, token in enumerate(sentence):
+                masked_sentence = sentence.copy()
+                masked_sentence[i] = "[MASK]"
+                embedding = self.extractor(masked_sentence)
+                embeddings_dict[token] = embedding
+
+            embeddings_list.append(embeddings_dict)
+
+        return embeddings_list
 
 # Test code with multiple sample data
 # if __name__ == "__main__":
-    # # Multiple sample inputs based on provided figures
-    # sample_corpus = [
-    #     ["SELECT", "<ALIAS_T1>", "<COL>", "SUM", "DESC"],
-    #     ["FROM", "<TAB>", "WHERE", "<COL>", "=", '<STR>'],
-    #     ["JOIN", "<TAB>", "<ALIAS_T1>", "<COL>", "AS", "<COL_OUT>"]
-    # ]
-
-    # # Initialize TrainingSampleGenerator with default window_size=2
-    # pair_generator = PairGenerator(window_size=2)
-    # embedding_generator = BERTEmbeddingGenerator()
-
-    # # Generate pairs with default window_size
-    # print("Generated center-context pairs (window_size=2):")
-    # pairs = pair_generator(corpus=sample_corpus)
-    # embeddings = embedding_generator(corpus=sample_corpus)
-    
-    # for i, pairs in enumerate(pairs):
-    #     print(f"Sentence {i + 1}: {pairs}")
-
-    # for i, embedding_dict in enumerate(embeddings):
-    #     print(f"Sentence {i + 1} Embedding dict: {embedding_dict}")
+#     # Multiple sample inputs based on provided figures, with [MASK] added
+#     sample_corpus = [
+#         ["SELECT", "<TAB>", "WHERE", "<COL>", "=", "<STR>"],
+#         ["SELECT", "<COL>", "FROM", "<TAB>", "JOIN", "<TAB>", "ON", "<TAB>", ".", "<COL>", "=", "<TAB>", ".", "<COL>"]
+#     ]
+#
+#     # Initialize PairGenerator with default window_size=2 and BERTEmbeddingGenerator
+#     pair_generator = PairGenerator(window_size=2)
+#     embedding_generator = BERTEmbeddingGenerator()
+#
+#     # Generate pairs with default window_size
+#     print("Generated center-context pairs (window_size=2):")
+#     pairs = pair_generator(corpus=sample_corpus)
+#     embeddings = embedding_generator(corpus=sample_corpus)
+#
+#     for i, sentence_pairs in enumerate(pairs):
+#         print(f"\nSentence {i + 1} Center-Context pairs:")
+#         for pair in sentence_pairs:
+#             print(pair)
+#
+#     for i, embedding_dict in enumerate(embeddings):
+#         print(f"\nSentence {i + 1} BERT Embedding dict:")
+#         for token, emb in embedding_dict.items():
+#             print(f"  {token}: {len(emb)}-dim vector")
