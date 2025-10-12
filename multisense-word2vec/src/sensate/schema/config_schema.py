@@ -9,7 +9,7 @@ class TrainerConfig(BaseModel):
 
 class BaseTableEntry(BaseModel):
     id: int
-    center_word: str
-    context_word: str
-    sql_query: str
+    center_word_id: int
+    context_word_id: int
     embedding_id: int
+    sql_query_id: int
