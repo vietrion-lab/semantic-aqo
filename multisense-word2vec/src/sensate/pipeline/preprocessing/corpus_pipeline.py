@@ -1,4 +1,5 @@
 from typing import List, Dict
+from tqdm import tqdm
 from sensate.pipeline.preprocessing.bert_extractor import BERTExtractor
 
 class PairGenerator:
@@ -26,7 +27,7 @@ class PairGenerator:
 
     def __call__(self, corpus: list) -> list:
         # Purpose: Process a corpus to generate pairs for all sentences
-        return [self.generate_center_context_pair(sentence) for sentence in corpus]
+        return [self.generate_center_context_pair(sentence) for sentence in tqdm(corpus, desc="Generating training samples", unit="sentence")]
 
 
 class BERTEmbeddingGenerator:
@@ -43,7 +44,7 @@ class BERTEmbeddingGenerator:
         """
         embeddings_list = []
 
-        for sentence in corpus:
+        for sentence in tqdm(corpus, desc="Generating BERT embedding for queries", unit="query"):
             embeddings_dict = {}
             for i, token in enumerate(sentence):
                 masked_sentence = sentence.copy()
