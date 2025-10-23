@@ -3,8 +3,8 @@ training:
   learning_rate: 0.001
   batch_size: 64
   window_size: 5
-  embedding_dim: 768
-  output_dim: 150
+  embedding_dim: 150
+  distill_dim: 768
   num_senses: 3
 
 foundation:

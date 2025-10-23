@@ -6,7 +6,7 @@ class TrainerConfig(BaseModel):
     batch_size: int
     window_size: int
     embedding_dim: int
-    output_dim: int
+    distill_dim: int
     num_senses: int
     # Much more ....
     
