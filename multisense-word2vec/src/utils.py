@@ -4,7 +4,7 @@ from pathlib import Path
 from datasets import load_dataset
 from huggingface_hub import login
 
-from sensate.schema import TrainerConfig
+from sensate.schema import GlobalConfigSchema
 
 
 def setup_huggingface_auth():
@@ -39,7 +39,7 @@ def load_data(owner: str, dataset_name: str) -> list:
     dataset = load_dataset(f"{owner}/{dataset_name}")['train']
     return dataset[:10]['statement']
 
-def load_config(path: str) -> TrainerConfig:
+def load_config(path: str) -> GlobalConfigSchema:
     with open(path, 'r') as file:
         config_dict = yaml.safe_load(file)
-    return TrainerConfig(**config_dict['training'])
+    return GlobalConfigSchema(**config_dict)

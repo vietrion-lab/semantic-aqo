@@ -5,44 +5,45 @@ from sensate.schema.config_schema import BaseTableEntry
 
 
 class TrainingSampleGenerator:
-    def __init__(self, window_size: int = 2):
+    def __init__(self, window_size: int = 2, foundation_model_name: str = None):
         self.pair_generator = PairGenerator(window_size=window_size)
-        self.embedding_generator = BERTEmbeddingGenerator()
+        self.embedding_generator = BERTEmbeddingGenerator(foundation_model_name=foundation_model_name)
         self.next_id = 0
         self.word_id_counter = 0
         self.query_id_counter = 0
         self.embedding_id_counter = 0
 
-    def __call__(self, corpus: List[List[str]]) -> tuple[Dict, Dict, Dict, List]:
+    def __call__(self, corpus: List[List[str]]) -> tuple:
         """
         4 tables:
-        - vocab_table: {word: id}
-        - query_table: {id: sql_query}
-        - embedding_table: {id: embedding} (each token per query_id has its own embedding)
-        - base_table: merged table with ids
+        - vocab_table: DataFrame with columns [word, id]
+        - query_table: DataFrame with columns [id, sql_query]
+        - embedding_table: DataFrame with columns [id, embedding]
+        - base_table: DataFrame with columns [id, center_word_id, context_word_id, embedding_id, sql_query_id]
         """
         # Step 1: Generate pairs (center-context) and contextual BERT embeddings
+            
         pairs = self.pair_generator(corpus)
         embeddings = self.embedding_generator(corpus)  # [{token: np.array(768)}, ...]
 
-        vocab_table, query_table, embedding_table, base_table = {}, {}, {}, []
+        vocab_dict, query_dict, embedding_dict, base_list = {}, {}, {}, []
         embedding_id_map = {}  # (token, query_id) -> embedding_id
 
         # Step 2: Build vocabulary
         unique_words = set(word for sentence in corpus for word in sentence)
         for word in unique_words:
-            vocab_table[word] = self.word_id_counter
+            vocab_dict[word] = self.word_id_counter
             self.word_id_counter += 1
 
         # Step 3: Build query table
         for i, sentence in enumerate(corpus):
-            query_table[i] = " ".join(sentence)
+            query_dict[i] = " ".join(sentence)
             self.query_id_counter += 1
 
         # Step 4: Build embedding table (unique per token per query)
         for query_id, emb_dict in enumerate(embeddings):
             for token, emb in emb_dict.items():
-                embedding_table[self.embedding_id_counter] = emb
+                embedding_dict[self.embedding_id_counter] = emb
                 embedding_id_map[(token, query_id)] = self.embedding_id_counter
                 self.embedding_id_counter += 1
 
@@ -52,54 +53,32 @@ class TrainingSampleGenerator:
                 if (center, query_id) not in embedding_id_map:
                     continue
 
-                base_entry = BaseTableEntry(
-                    id=self.next_id,
-                    center_word_id=vocab_table[center],
-                    context_word_id=vocab_table[context],
-                    embedding_id=embedding_id_map[(center, query_id)],
-                    sql_query_id=query_id
-                )
-                base_table.append(base_entry)
+                base_entry = {
+                    'id': self.next_id,
+                    'center_word_id': vocab_dict[center],
+                    'context_word_id': vocab_dict[context],
+                    'embedding_id': embedding_id_map[(center, query_id)],
+                    'sql_query_id': query_id
+                }
+                base_list.append(base_entry)
                 self.next_id += 1
+
+        # Convert to pandas DataFrames
+        vocab_table = pd.DataFrame(list(vocab_dict.items()), columns=['word', 'id'])
+        query_table = pd.DataFrame(list(query_dict.items()), columns=['id', 'sql_query'])
+        embedding_table = pd.DataFrame(list(embedding_dict.items()), columns=['id', 'embedding'])
+        base_table = pd.DataFrame(base_list)
 
         return vocab_table, query_table, embedding_table, base_table
 
+# if __name__ == "__main__":
+#     sample_corpus = [
+#         ["SELECT", "<TAB>", "WHERE", "<COL>", "=", "<STR>"],
+#         ["SELECT", "<COL>", "FROM", "<TAB>", "JOIN", "<TAB>", "ON", "<TAB>", ".", "<COL>", "=", "<TAB>", ".", "<COL>"]
+#     ]
 
-def print_pretty_tables(vocab_table: Dict, query_table: Dict, embedding_table: Dict, base_table: List):
-    # Print Vocabulary Table
-    print("\n Vocabulary Table:")
-    vocab_df = pd.DataFrame(list(vocab_table.items()), columns=["word", "id"])
-    print(vocab_df.to_string(index=False))
+#     training_sample_generator = TrainingSampleGenerator(window_size=2)
+#     vocab_table, query_table, embedding_table, base_table = training_sample_generator(corpus=sample_corpus)
 
-    # Print Query Table
-    print("\n Query Table:")
-    query_df = pd.DataFrame(list(query_table.items()), columns=["query_id", "sql_query"])
-    print(query_df.to_string(index=False))
-
-    # Print Embedding Table
-    print("\n Embedding Table (first 5 dims):")
-    embedding_data = [[eid, emb[:5]] for eid, emb in embedding_table.items()]
-    embedding_df = pd.DataFrame(embedding_data, columns=["embedding_id", "embedding"])
-    print(embedding_df.to_string(index=False))
-
-    # Print Base Table
-    print("\n Base Table:")
-    base_data = [
-        [entry.id, entry.center_word_id, entry.context_word_id, entry.embedding_id, entry.sql_query_id]
-        for entry in base_table
-    ]
-    base_df = pd.DataFrame(base_data, columns=["ID", "Center ID", "Context ID", "Embedding ID", "SQL Query ID"])
-    print(base_df.to_string(index=False))
-
-
-if __name__ == "__main__":
-    sample_corpus = [
-        ["SELECT", "<TAB>", "WHERE", "<COL>", "=", "<STR>"],
-        ["SELECT", "<COL>", "FROM", "<TAB>", "JOIN", "<TAB>", "ON", "<TAB>", ".", "<COL>", "=", "<TAB>", ".", "<COL>"]
-    ]
-
-    training_sample_generator = TrainingSampleGenerator(window_size=2)
-    vocab_table, query_table, embedding_table, base_table = training_sample_generator(corpus=sample_corpus)
-
-    # Print tables
-    print_pretty_tables(vocab_table, query_table, embedding_table, base_table)
+#     # Print tables
+#     print_pretty_tables(vocab_table, query_table, embedding_table, base_table)
