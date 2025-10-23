@@ -1,4 +1,4 @@
-from tabulate import tabulate
+import pandas as pd
 from typing import List, Dict
 from sensate.pipeline.preprocessing.corpus_pipeline import PairGenerator, BERTEmbeddingGenerator
 from sensate.schema.config_schema import BaseTableEntry
@@ -68,18 +68,19 @@ class TrainingSampleGenerator:
 def print_pretty_tables(vocab_table: Dict, query_table: Dict, embedding_table: Dict, base_table: List):
     # Print Vocabulary Table
     print("\n Vocabulary Table:")
-    vocab_data = [[word, id] for word, id in vocab_table.items()]
-    print(tabulate(vocab_data, headers=["Word", "ID"], tablefmt="fancy_grid"))
+    vocab_df = pd.DataFrame(list(vocab_table.items()), columns=["word", "id"])
+    print(vocab_df.to_string(index=False))
 
     # Print Query Table
     print("\n Query Table:")
-    query_data = [[qid, query] for qid, query in query_table.items()]
-    print(tabulate(query_data, headers=["Query ID", "SQL Query"], tablefmt="fancy_grid"))
+    query_df = pd.DataFrame(list(query_table.items()), columns=["query_id", "sql_query"])
+    print(query_df.to_string(index=False))
 
     # Print Embedding Table
     print("\n Embedding Table (first 5 dims):")
     embedding_data = [[eid, emb[:5]] for eid, emb in embedding_table.items()]
-    print(tabulate(embedding_data, headers=["Embedding ID", "Embedding"], tablefmt="fancy_grid"))
+    embedding_df = pd.DataFrame(embedding_data, columns=["embedding_id", "embedding"])
+    print(embedding_df.to_string(index=False))
 
     # Print Base Table
     print("\n Base Table:")
@@ -87,7 +88,8 @@ def print_pretty_tables(vocab_table: Dict, query_table: Dict, embedding_table: D
         [entry.id, entry.center_word_id, entry.context_word_id, entry.embedding_id, entry.sql_query_id]
         for entry in base_table
     ]
-    print(tabulate(base_data, headers=["ID", "Center ID", "Context ID", "Embedding ID", "SQL Query ID"], tablefmt="fancy_grid"))
+    base_df = pd.DataFrame(base_data, columns=["ID", "Center ID", "Context ID", "Embedding ID", "SQL Query ID"])
+    print(base_df.to_string(index=False))
 
 
 if __name__ == "__main__":

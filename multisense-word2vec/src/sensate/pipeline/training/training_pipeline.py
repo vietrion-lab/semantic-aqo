@@ -17,7 +17,10 @@ class Trainer:
     def fit(self, data):
         # Step 1: Prepare training samples
         preprocessed_data = self.preprocessing_pipeline(data)
-        base_table, vocab_table, embedding_table, query_table = self.training_sample_generator(corpus=preprocessed_data)
+        vocab_table, query_table, embedding_table, base_table = self.training_sample_generator(corpus=preprocessed_data)
+        # print(base_table)
+        # print(vocab_table)
+        print(query_table)
         print(f"Corpus length: {len(base_table)}, Vocab size: {len(vocab_table)}")
 
         # Step 2: Init matrices
