@@ -1,7 +1,9 @@
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
+import torch
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 
 class SenseEmbeddingsInitializer:
     def __init__(self, 
@@ -68,23 +70,46 @@ class SenseEmbeddingsInitializer:
         return sense_df
         
 class OutputEmbeddingsInitializer:
-    # TODO: AQO-11
-    def __init__(self, vocab, config):
+    """
+    Initialize Output Embedding Matrix O with Gaussian distribution.
+    Shape: (vocab_size, 300)
+    """
+    def __init__(self, vocab: pd.DataFrame, embedding_dim: int = 300):
         self.vocab = vocab
-        self.config = config
+        self.vocab_size = len(vocab)
+        self.embedding_dim = embedding_dim
 
-    def __call__(self):
-        # Initialize output embeddings based on vocab
-        # Placeholder for actual initialization logic
-        return {"output_embeddings": "initialized"}
+    def __call__(self) -> torch.Tensor:
+        """
+        Returns:
+            torch.Tensor: Output embedding matrix of shape (vocab_size, 300)
+        """
+        print(f"Initializing Output Embeddings: shape ({self.vocab_size}, {self.embedding_dim})")
+        
+        # Initialize with Gaussian distribution (mean=0, std=0.01)
+        O = torch.randn(self.vocab_size, self.embedding_dim) * 0.01
+        
+        print(f"✓ Output Embeddings initialized: {O.shape}")
+        return O
     
 class ProjectionMatricesInitializer:
-    # TODO: AQO-11
-    def __init__(self):
-        pass
+    """
+    Initialize Projection Matrix P with Gaussian distribution.
+    Shape: (768, 300) - reduces BERT dimension (768) to model dimension (300)
+    """
+    def __init__(self, bert_dim: int = 768, embedding_dim: int = 300):
+        self.bert_dim = bert_dim
+        self.embedding_dim = embedding_dim
 
-    def __call__(self):
-        # Initialize projection matrices based on vocab
-        print(f"Initializing projection matrices")
-        # Placeholder for actual initialization logic
-        return {"projection_matrices": "initialized"}
+    def __call__(self) -> torch.Tensor:
+        """
+        Returns:
+            torch.Tensor: Projection matrix of shape (768, 300)
+        """
+        print(f"Initializing Projection Matrix: shape ({self.bert_dim}, {self.embedding_dim})")
+        
+        # Initialize with Gaussian distribution (mean=0, std=0.01)
+        P = torch.randn(self.bert_dim, self.embedding_dim) * 0.01
+        
+        print(f"✓ Projection Matrix initialized: {P.shape}")
+        return P

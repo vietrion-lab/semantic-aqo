@@ -31,21 +31,32 @@ class Trainer:
         print("=" * 20)
 
         # Step 2: Init matrices
-        start_sense_embeddings = SenseEmbeddingsInitializer(
+        sense_embeddings = SenseEmbeddingsInitializer(
             base_table=base_table, 
             vocab=vocab_table, 
             embedding=embedding_table,
             embedding_dim=self.config.training.embedding_dim,
             num_senses=self.config.training.num_senses
         )()
-        print(f"Sense Embeddings Initialized: \n{start_sense_embeddings.head()}")
-        print(f"Sense Embeddings Shape: {start_sense_embeddings.shape}")
+        print(f"Sense Embeddings: \n{sense_embeddings.head()}")
+        if len(sense_embeddings) > 0:
+            print(f"Sense Embedding Shape: {len(sense_embeddings['embedding'].iloc[0])} dims")
         print("=" * 20)
 
-        # output_embeddings = OutputEmbeddingsInitializer(vocab=vocab_table, config=self.config)()
-        # projection_matrices = ProjectionMatricesInitializer(config=self.config)()
+        output_embeddings = OutputEmbeddingsInitializer(
+            vocab=vocab_table, 
+            embedding_dim=self.config.training.embedding_dim
+        )()
+        print(f"Output Embeddings: {output_embeddings.shape}")
+        print("=" * 20)
         
-
+        projection_matrix = ProjectionMatricesInitializer(
+            bert_dim=self.config.training.distill_dim,
+            embedding_dim=self.config.training.embedding_dim
+        )()
+        print(f"Projection Matrix: {projection_matrix.shape}")
+        print("=" * 20)
+        
         # Step 3: Training loop
 
     def save_model(self, path=None):
