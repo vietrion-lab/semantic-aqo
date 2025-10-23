@@ -31,8 +31,8 @@ class PairGenerator:
 
 
 class BERTEmbeddingGenerator:
-    def __init__(self):
-        self.extractor = BERTExtractor()
+    def __init__(self, foundation_model_name: str = None):
+        self.extractor = BERTExtractor(model_name=foundation_model_name)
 
     def __call__(self, corpus: List[List[str]]) -> List[Dict[str, list]]:
         """
@@ -41,19 +41,34 @@ class BERTEmbeddingGenerator:
             - Use BERTExtractor to extract embedding for the masked token.
         Output:
             List[Dict[token, embedding_vector]]
+        
+        Uses GPU batch processing for efficiency.
         """
-        embeddings_list = []
-
-        for sentence in tqdm(corpus, desc="Generating BERT embedding for queries", unit="query"):
-            embeddings_dict = {}
-            for i, token in enumerate(sentence):
+        # Collect all masked sentences
+        all_masked_sentences = []
+        sentence_token_map = []  # Track which sentence and token each masked sentence belongs to
+        
+        for sentence_idx, sentence in enumerate(corpus):
+            for token in sentence:
                 masked_sentence = sentence.copy()
-                masked_sentence[i] = "[MASK]"
-                embedding = self.extractor(masked_sentence)
-                embeddings_dict[token] = embedding
-
-            embeddings_list.append(embeddings_dict)
-
+                masked_sentence[sentence.index(token)] = "<mask>"
+                all_masked_sentences.append(masked_sentence)
+                sentence_token_map.append((sentence_idx, token))
+        
+        # Process all masked sentences in batches using GPU
+        batch_size = 32
+        all_embeddings = []
+        
+        for i in tqdm(range(0, len(all_masked_sentences), batch_size), desc="Generating BERT embeddings", unit="batch"):
+            batch = all_masked_sentences[i:i + batch_size]
+            batch_embeddings = self.extractor.batch_extract(batch)
+            all_embeddings.extend(batch_embeddings)
+        
+        # Organize embeddings by sentence
+        embeddings_list = [{} for _ in corpus]
+        for (sentence_idx, token), embedding in zip(sentence_token_map, all_embeddings):
+            embeddings_list[sentence_idx][token] = embedding
+        
         return embeddings_list
 
 # Test code with multiple sample data
