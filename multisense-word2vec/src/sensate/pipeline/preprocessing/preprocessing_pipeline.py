@@ -1,241 +1,314 @@
 import re
-from typing import List
+from typing import List, Dict, Tuple, Optional
+from tqdm import tqdm
+import sqlglot
+from sqlglot import exp
+from sqlglot.expressions import Expression
 
 
 class PreprocessingPipeline:
     """
-    Simplified SQL preprocessing pipeline.
-    Converts SQL queries to normalized token sequences following the diagram:
+    Robust SQL preprocessing pipeline using sqlglot.
+    Converts SQL queries to normalized token sequences following strict rules:
     
     Pure SQL -> Processed SQL -> Tokenized SQL
     
-    Example:
-    "DELETE FROM Employees WHERE EmployeeID = 2;"
-    -> ['DELETE', 'FROM', '<TAB>', '<ALIAS_T1>', 'WHERE', '<COL>', '=', '<NUM>', ';']
+    Rules:
+    - Tables: <TAB> with <ALIAS_Ti> (i = 1-based encounter order)
+    - Columns: <COL> (qualified: <ALIAS_Ti>.<COL>)
+    - Output aliases: <COL_OUT> (only when AS exists)
+    - Literals: <NUM>, <STR>, <DATE>, <TIMESTAMP>, <BOOL_TRUE>, <BOOL_FALSE>, <NULL>
+    - Functions/operators/keywords: preserved
     """
     
-    # SQL keywords that should remain uppercase
-    KEYWORDS = {
-        'SELECT', 'FROM', 'WHERE', 'JOIN', 'ON', 'AND', 'OR', 'GROUP', 'BY', 'ORDER',
-        'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER', 'CROSS', 'UNION', 'DISTINCT',
-        'LIMIT', 'OFFSET', 'AS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'ASC', 'DESC',
-        'HAVING', 'IN', 'IS', 'NOT', 'NULL', 'INSERT', 'UPDATE', 'DELETE', 'VALUES',
-        'SET', 'INTO', 'SUM', 'COUNT', 'AVG', 'MIN', 'MAX', 'TRUE', 'FALSE', 'BETWEEN',
-        'LIKE', 'EXISTS', 'ALL', 'ANY', 'TOP', 'WITH', 'USING'
-    }
-    
     def __init__(self):
-        self.table_num = 1
+        self.table_counter = 0
+        self.alias_map: Dict[str, str] = {}  # real_alias -> <ALIAS_Ti>
+        self.table_map: Dict[str, Tuple[str, Optional[str], bool]] = {}  # <ALIAS_Ti> -> (real_table, real_alias, is_temp)
+        self.dialect = None
     
-    def tokenize(self, sql: str) -> List[str]:
-        """Main tokenization method."""
-        if not sql or not sql.strip():
-            return []
-        
-        self.table_num = 1  # Reset for each query
-        original_query = sql.strip()
-        
-        # Step 1: Replace literals
-        query = self._replace_literals(original_query)
-        
-        # Step 2: Extract alias information BEFORE modifying the query
-        aliases_info = self._extract_alias_info(original_query)
-        
-        # Step 3: Handle table references
-        query = self._handle_table_references(query)
-        
-        # Step 4: Handle remaining identifiers and keywords
-        tokens = self._tokenize_and_classify(query, aliases_info)
-        
-        return tokens
-    
-    def _extract_alias_info(self, query: str) -> list:
-        """Extract alias information from the original query."""
-        aliases = []
-        
-        # Find aliases from FROM clause
-        from_match = re.search(r'\bFROM\s+\w+\s+([a-zA-Z_]\w*)', query, re.IGNORECASE)
-        if from_match:
-            aliases.append(from_match.group(1).lower())
-        
-        # Find aliases from JOIN clauses
-        join_matches = re.finditer(r'\bJOIN\s+\w+\s+([a-zA-Z_]\w*)', query, re.IGNORECASE)
-        for match in join_matches:
-            aliases.append(match.group(1).lower())
-        
-        return aliases
-    
-    def _replace_literals(self, query: str) -> str:
-        """Replace literal values with tokens."""
-        # Strings
-        query = re.sub(r"'[^']*'", '<STR>', query)
-        query = re.sub(r'"[^"]*"', '<STR>', query)
-        
-        # Timestamps and dates
-        query = re.sub(r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}', '<TIMESTAMP>', query)
-        query = re.sub(r'\d{4}-\d{2}-\d{2}', '<DATE>', query)
-        
-        # Numbers (decimals first)
-        query = re.sub(r'\b\d+\.\d+\b', '<NUM>', query)
-        query = re.sub(r'\b\d+\b', '<NUM>', query)
-        
-        # Booleans and NULL
-        query = re.sub(r'\bTRUE\b', '<BOOL_TRUE>', query, flags=re.IGNORECASE)
-        query = re.sub(r'\bFALSE\b', '<BOOL_FALSE>', query, flags=re.IGNORECASE)
-        query = re.sub(r'\bNULL\b', '<NULL>', query, flags=re.IGNORECASE)
-        
-        return query
-    
-    def _handle_table_references(self, query: str) -> str:
-        """Replace table references. Only add <ALIAS_Tn> when there's actually an alias."""
-        
-        # DELETE FROM table (no alias expected)
-        query = re.sub(
-            r'\bDELETE\s+FROM\s+(\w+)',
-            r'DELETE FROM <TAB>',
-            query, flags=re.IGNORECASE
-        )
-        
-        # UPDATE table (no alias expected)  
-        query = re.sub(
-            r'\bUPDATE\s+(\w+)',
-            r'UPDATE <TAB>',
-            query, flags=re.IGNORECASE
-        )
-        
-        # INSERT INTO table (no alias expected)
-        query = re.sub(
-            r'\bINSERT\s+INTO\s+(\w+)',
-            r'INSERT INTO <TAB>',
-            query, flags=re.IGNORECASE
-        )
-        
-        # FROM table_name alias (with alias) - e.g., "FROM users u"
-        def replace_from_with_alias(match):
-            full_match = match.group(0)
-            # Check if there are actual aliases (table followed by identifier that's not a keyword)
-            if re.search(r'\b\w+\s+[a-zA-Z_]\w*\b', full_match):
-                # Count number of table alias pairs
-                aliases = re.findall(r'\b\w+\s+([a-zA-Z_]\w*)\b', full_match)
-                num_tables = len(aliases)
-                if num_tables == 0:
-                    # Fallback: count commas + 1
-                    num_tables = full_match.count(',') + 1
-                
-                result = 'FROM'
-                for i in range(num_tables):
-                    if i > 0:
-                        result += ' ,'
-                    result += f' <TAB> <ALIAS_T{self._next_table()}>'
-                return result
-            else:
-                # No aliases, just table names
-                return 'FROM <TAB>'
-        
-        query = re.sub(
-            r'\bFROM\s+\w+(?:\s+[a-zA-Z_]\w*)?(?:\s*,\s*\w+(?:\s+[a-zA-Z_]\w*)?)*',
-            replace_from_with_alias, query, flags=re.IGNORECASE
-        )
-        
-        # JOIN table alias (with alias) - e.g., "JOIN orders o"
-        def replace_join_with_alias(match):
-            join_type = match.group(1)
-            full_match = match.group(0)
-            prefix = f'{join_type} ' if join_type else ''
-            
-            # Check if there's an alias after the table name
-            if re.search(r'\bJOIN\s+\w+\s+[a-zA-Z_]\w*', full_match, re.IGNORECASE):
-                return f'{prefix}JOIN <TAB> <ALIAS_T{self._next_table()}>'
-            else:
-                return f'{prefix}JOIN <TAB>'
-        
-        query = re.sub(
-            r'\b(?:(INNER|LEFT|RIGHT|FULL|OUTER|CROSS)\s+)?JOIN\s+\w+(?:\s+[a-zA-Z_]\w*)?',
-            replace_join_with_alias, query, flags=re.IGNORECASE
-        )
-        
-        return query
-    
-    def _tokenize_and_classify(self, query: str, aliases_info: list) -> List[str]:
-        """Split query and classify tokens."""
-        
-        # Handle alias.column references BEFORE general processing
-        for i, alias in enumerate(aliases_info, 1):
-            # Replace alias.column with <ALIAS_Tn>.<COL>
-            pattern = rf'\b{re.escape(alias)}\.(\w+)\b'
-            query = re.sub(pattern, f'<ALIAS_T{i}>.<COL>', query, flags=re.IGNORECASE)
-        
-        # Handle AS output_alias
-        query = re.sub(
-            r'\bAS\s+(\w+)',
-            lambda m: 'AS <COL_OUT>' if m.group(1).upper() not in self.KEYWORDS else m.group(0),
-            query, flags=re.IGNORECASE
-        )
-        
-        # Split into tokens first
-        tokens = re.findall(r'<[^>]+>|[a-zA-Z_]\w*|[=<>!]+|[(),;.]|\S', query)
-        
-        # Classify each token
-        result = []
-        for token in tokens:
-            if not token or token.isspace():
+    def _detect_dialect(self, sql: str) -> str:
+        """Detect SQL dialect based on syntax hints."""
+        if '#' in sql or '##' in sql:
+            # Temp tables indicate T-SQL
+            return 'tsql'
+        # Try common dialects
+        for dialect in ['postgres', 'mysql', 'tsql', 'bigquery']:
+            try:
+                sqlglot.parse_one(sql, read=dialect)
+                return dialect
+            except:
                 continue
-            
-            # Already processed tokens
-            if token.startswith('<') and token.endswith('>'):
-                result.append(token)
-            # Keywords
-            elif token.upper() in self.KEYWORDS:
-                result.append(token.upper())
-            # Operators and punctuation
-            elif token in '=<>!(),.;':
-                result.append(token)
-            elif re.match(r'[=<>!]+', token):
-                result.append(token)
-            # Check if it's one of our known aliases - if so, replace with appropriate <ALIAS_Tn>
-            elif token.lower() in aliases_info:
-                alias_index = aliases_info.index(token.lower()) + 1
-                result.append(f'<ALIAS_T{alias_index}>')
-            # Everything else becomes <COL>
-            elif re.match(r'[a-zA-Z_]\w*', token):
-                result.append('<COL>')
-            else:
-                result.append(token)
-        
-        return result
+        return 'ansi'
     
-    def _next_table(self) -> int:
-        """Get next table alias number."""
-        num = self.table_num
-        self.table_num += 1
-        return num
+    def _next_alias(self) -> str:
+        """Generate next table alias token."""
+        self.table_counter += 1
+        return f'<ALIAS_T{self.table_counter}>'
+    
+    def _register_table(self, table_name: str, alias: Optional[str] = None) -> str:
+        """Register a table and return its alias token."""
+        # Check if it's a temp table
+        is_temp = table_name.startswith('#') or table_name.startswith('##')
+        
+        # If alias exists, check if already registered
+        if alias and alias in self.alias_map:
+            return self.alias_map[alias]
+        
+        # Generate new alias token
+        alias_token = self._next_alias()
+        
+        if alias:
+            self.alias_map[alias] = alias_token
+        else:
+            # No explicit alias - use table name as key
+            self.alias_map[table_name] = alias_token
+        
+        # Store mapping
+        self.table_map[alias_token] = (table_name, alias, is_temp)
+        return alias_token
+    
+    def _extract_alias_string(self, alias) -> Optional[str]:
+        """Extract alias string from alias node."""
+        if not alias:
+            return None
+        if isinstance(alias, exp.TableAlias):
+            if hasattr(alias, 'this'):
+                if isinstance(alias.this, exp.Identifier):
+                    return alias.this.this if hasattr(alias.this, 'this') else str(alias.this)
+                return str(alias.this)
+            return str(alias)
+        elif isinstance(alias, exp.Identifier):
+            return alias.this if hasattr(alias, 'this') else str(alias)
+        return str(alias)
+    
+    def _collect_table_aliases(self, node: Expression):
+        """First pass: collect all table aliases from FROM/JOIN clauses."""
+        if isinstance(node, exp.Table):
+            table_name = node.name if isinstance(node.name, str) else (node.name.this if hasattr(node.name, 'this') else str(node.name))
+            alias = node.alias if hasattr(node, 'alias') and node.alias else None
+            
+            # Extract alias string
+            alias_str = self._extract_alias_string(alias)
+            
+            # Register table and alias
+            if alias_str and alias_str not in self.alias_map:
+                self._register_table(table_name, alias_str)
+            elif not alias_str and table_name not in self.alias_map:
+                self._register_table(table_name, None)
+        
+        # Recursively collect from children
+        for child in node.iter_expressions():
+            self._collect_table_aliases(child)
+    
+    def _transform_node(self, node: Expression) -> Expression:
+        """Transform AST node according to tokenization rules."""
+        
+        # Handle Table references in FROM/JOIN
+        if isinstance(node, exp.Table):
+            table_name = node.name if isinstance(node.name, str) else (node.name.this if hasattr(node.name, 'this') else str(node.name))
+            alias = node.alias if hasattr(node, 'alias') and node.alias else None
+            
+            # Extract alias string
+            alias_str = self._extract_alias_string(alias)
+            
+            # Get the alias token (should already be registered)
+            if alias_str and alias_str in self.alias_map:
+                alias_token = self.alias_map[alias_str]
+            elif table_name in self.alias_map:
+                alias_token = self.alias_map[table_name]
+            else:
+                # Fallback: register now
+                alias_token = self._register_table(table_name, alias_str)
+            
+            # Replace table name with <TAB>
+            node.set('this', exp.Identifier(this='<TAB>'))
+            
+            # Set alias to our token
+            node.set('alias', exp.TableAlias(this=exp.Identifier(this=alias_token)))
+        
+        # Handle Column references
+        elif isinstance(node, exp.Column):
+            table_ref = node.table if hasattr(node, 'table') and node.table else None
+            
+            if table_ref:
+                # Qualified column: table.column -> <ALIAS_Ti>.<COL>
+                if isinstance(table_ref, exp.Identifier):
+                    table_str = table_ref.this if hasattr(table_ref, 'this') else str(table_ref)
+                else:
+                    table_str = str(table_ref)
+                    
+                if table_str in self.alias_map:
+                    alias_token = self.alias_map[table_str]
+                    node.set('table', exp.Identifier(this=alias_token))
+                node.set('this', exp.Identifier(this='<COL>'))
+            else:
+                # Unqualified column: column -> <COL>
+                node.set('this', exp.Identifier(this='<COL>'))
+        
+        # Handle Alias in SELECT (output columns)
+        elif isinstance(node, exp.Alias):
+            # Only replace if it's in SELECT clause (column output alias)
+            parent = node.parent
+            if parent and isinstance(parent, exp.Select):
+                # Replace alias with <COL_OUT>
+                node.set('alias', exp.Identifier(this='<COL_OUT>'))
+        
+        # Handle Literals
+        elif isinstance(node, exp.Literal):
+            if node.is_string:
+                node.set('this', '<STR>')
+            elif node.is_int or node.is_number:
+                node.set('this', '<NUM>')
+        
+        elif isinstance(node, (exp.Boolean)):
+            if str(node).upper() in ('TRUE', '1'):
+                return exp.Identifier(this='<BOOL_TRUE>')
+            else:
+                return exp.Identifier(this='<BOOL_FALSE>')
+        
+        elif isinstance(node, exp.Null):
+            return exp.Identifier(this='<NULL>')
+        
+        elif isinstance(node, exp.DataType):
+            # Handle DATE/TIMESTAMP types
+            type_name = str(node.this).upper() if hasattr(node, 'this') else str(node).upper()
+            if 'TIMESTAMP' in type_name:
+                return exp.Identifier(this='<TIMESTAMP>')
+            elif 'DATE' in type_name:
+                return exp.Identifier(this='<DATE>')
+        
+        # Recursively transform children
+        for child in node.iter_expressions():
+            self._transform_node(child)
+        
+        return node
+    
+    def _extract_mapping(self) -> List[str]:
+        """Extract table and alias mapping for pretty printing."""
+        lines = []
+        for alias_token in sorted(self.table_map.keys(), key=lambda x: int(x.split('T')[1].rstrip('>'))):
+            table_name, real_alias, is_temp = self.table_map[alias_token]
+            temp_marker = " (temp)" if is_temp else ""
+            if real_alias:
+                lines.append(f"<TAB> {alias_token} -> {table_name} {real_alias}{temp_marker}")
+            else:
+                lines.append(f"<TAB> {alias_token} -> {table_name}{temp_marker}")
+        return lines
+    
+    def tokenize(self, sql: str) -> Tuple[str, List[str], List[str]]:
+        """
+        Main tokenization method.
+        
+        Returns:
+            - processed_sql: The tokenized SQL string
+            - tokens: List of tokens
+            - mapping: List of table/alias mapping strings
+        """
+        if not sql or not sql.strip():
+            return "", [], []
+        
+        # Reset state
+        self.table_counter = 0
+        self.alias_map = {}
+        self.table_map = {}
+        
+        # Detect dialect
+        self.dialect = self._detect_dialect(sql)
+        
+        try:
+            # Parse SQL to AST
+            ast = sqlglot.parse_one(sql, read=self.dialect)
+            
+            # First pass: collect all table aliases
+            self._collect_table_aliases(ast)
+            
+            # Second pass: transform AST
+            self._transform_node(ast)
+            
+            # Generate processed SQL
+            processed_sql = ast.sql(dialect=self.dialect, pretty=True)
+            
+            # Extract mapping
+            mapping = self._extract_mapping()
+            
+            # Tokenize the processed SQL
+            tokens = self._sql_to_tokens(processed_sql)
+            
+            return processed_sql, tokens, mapping
+        
+        except Exception as e:
+            # Fallback to simple tokenization if parsing fails
+            print(f"Warning: Failed to parse SQL with sqlglot: {e}")
+            return sql, [], []
+    
+    def _sql_to_tokens(self, sql: str) -> List[str]:
+        """Convert SQL string to list of tokens."""
+        # Simple tokenization by splitting on whitespace and punctuation
+        tokens = []
+        current_token = ""
+        
+        for char in sql:
+            if char in ' \t\n\r':
+                if current_token:
+                    tokens.append(current_token)
+                    current_token = ""
+            elif char in '(),;.=<>!':
+                if current_token:
+                    tokens.append(current_token)
+                    current_token = ""
+                tokens.append(char)
+            else:
+                current_token += char
+        
+        if current_token:
+            tokens.append(current_token)
+        
+        return [t for t in tokens if t.strip()]
     
     def __call__(self, batch: List[str]) -> List[List[str]]:
-        """Process a batch of queries."""
-        return [self.tokenize(query) for query in batch]
+        """
+        Process a batch of queries.
+        
+        Returns list of token lists (matching old output format).
+        """
+        results = []
+        for query in tqdm(batch, desc="Preprocessing queries", unit="query"):
+            processed_sql, tokens, mapping = self.tokenize(query)
+            results.append(tokens)
+        return results
 
-# if __name__ == "__main__":
-#     pipeline = PreprocessingPipeline()
+
+if __name__ == "__main__":
+    pipeline = PreprocessingPipeline()
     
-#     # Test cases matching the diagram
-#     test_queries = [
-#         "DELETE FROM Employees WHERE EmployeeID = 2;",
-#         "SELECT u.name, SUM(o.amount) AS total FROM users u JOIN orders o ON u.user_id = o.id WHERE u.age >= 21",
-#         "UPDATE products SET price = 99.99 WHERE category = 'electronics'",
-#         "INSERT INTO customers VALUES (1, 'John Doe', '2023-01-15')",
-#         """SELECT u.name, SUM(o.amount) AS total
-# FROM users u
-# JOIN orders o ON o.user_id = u.id
-# WHERE u.age >= 21 AND o.status IN ('paid','shipped')
-# GROUP BY u.name
-# ORDER BY total DESC"""
-#     ]
+    # Test cases covering various SQL patterns
+    test_queries = [
+        "DELETE FROM Employees WHERE EmployeeID = 2;",
+        "SELECT u.name, SUM(o.amount) AS total FROM users u JOIN orders o ON u.user_id = o.id WHERE u.age >= 21",
+        "UPDATE products SET price = 99.99 WHERE category = 'electronics'",
+        "INSERT INTO customers VALUES (1, 'John Doe', '2023-01-15')",
+        """SELECT u.name, SUM(o.amount) AS total
+FROM users u
+JOIN orders o ON o.user_id = u.id
+WHERE u.age >= 21 AND o.status IN ('paid','shipped')
+GROUP BY u.name
+ORDER BY total DESC""",
+        "SELECT * FROM #temp_table WHERE id = 1",  # T-SQL temp table
+        "SELECT a.id, b.name FROM table1 a, table2 b WHERE a.id = b.id",  # Comma join
+        "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",  # CTE
+    ]
     
-#     print("=== Clean SQL Preprocessing Pipeline ===\n")
+    print("=== Robust SQL Preprocessing Pipeline ===\n")
     
-#     for i, query in enumerate(test_queries, 1):
-#         print(f"Test {i}: {query}")
-#         tokens = pipeline.tokenize(query)
-#         print(f"Result:  {' '.join(tokens)}")
-#         print(f"Tokens:  {tokens}")
-#         print("-" * 70)
+    for i, query in enumerate(test_queries, 1):
+        print(f"Test {i}:")
+        print(f"Original: {query[:80]}...")
+        processed_sql, tokens, mapping = pipeline.tokenize(query)
+        print(f"\nProcessed SQL:")
+        print(processed_sql)
+        print(f"\nMapping:")
+        for line in mapping:
+            print(f"  {line}")
+        print(f"\nTokens: {tokens[:20]}...")  # Show first 20 tokens
+        print("-" * 80)
