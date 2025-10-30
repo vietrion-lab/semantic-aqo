@@ -11,3 +11,4 @@ tqdm>=4.65.0
 sqlglot>=25.0.0
 protobuf==6.33.0
 scikit-learn==1.7.2
+accelerate==1.11.0
