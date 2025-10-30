@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import torch
 from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
+from sklearn.decomposition import IncrementalPCA
 
 class SenseEmbeddingsInitializer:
     def __init__(self, 
@@ -24,8 +24,30 @@ class SenseEmbeddingsInitializer:
         self.embedding = embedding
         self.embedding_dim = embedding_dim
         self.num_senses = num_senses
-
-    def __call__(self) -> pd.DataFrame:
+        
+    def _fit_ipca(self) -> IncrementalPCA:
+        ipca = IncrementalPCA(n_components=self.embedding_dim, batch_size=3000)
+        reduction_embeddings = []
+        
+        for _, row in tqdm(self.vocab.iterrows(), desc="Fitting IPCA", unit="word"):
+            id = row['id']
+            embedding_ids = self.base_table[self.base_table['center_word_id'] == id]['embedding_id'].unique()
+            embeddings = self.embedding[self.embedding['id'].isin(embedding_ids)]
+            for emb in embeddings.itertuples():
+                reduction_embeddings.append(emb.embedding)
+            
+        print(f"Fitting IncrementalPCA with {len(reduction_embeddings)} embeddings.")
+        
+        batch_size = 3000
+        for i in tqdm(range(0, len(reduction_embeddings), batch_size), desc="Fitting IPCA", unit="batch"):
+            batch_embeddings = reduction_embeddings[i:min(i+batch_size, len(reduction_embeddings))]
+            ipca.partial_fit(batch_embeddings)
+        retained_var = ipca.explained_variance_ratio_.sum()
+        print(f"✓ Retained variance {retained_var:.4f}")
+        
+        return ipca
+    
+    def _cluster_embeddings(self, ipca: IncrementalPCA):
         # Initialize sense embeddings based on base_table and vocab
         print(f"Clustering {self.num_senses} Sense Embedding for {len(self.vocab)} words.")
         
@@ -36,15 +58,20 @@ class SenseEmbeddingsInitializer:
             id = row['id']
             embedding_ids = self.base_table[self.base_table['center_word_id'] == id]['embedding_id'].unique()
             embeddings = self.embedding[self.embedding['id'].isin(embedding_ids)]
-            
-            if len(embeddings) < self.num_senses:
-                print(f"  Not enough embeddings ({len(embeddings)}) for word '{word}' to form {self.num_senses} senses. Skipping.")
-                continue
+
+            assert len(embeddings) >= self.num_senses, \
+                f"  Not enough embeddings ({len(embeddings)}) for word '{word}' to form {self.num_senses} senses."
             
             features = np.array(embeddings['embedding'].tolist())
+            transformed_features = ipca.transform(features)
+            
+            # Update each transformed embedding in the correct position
+            # Important: We need to match the order of embeddings DataFrame, not embedding_ids
+            for idx, (emb_idx, emb_row) in enumerate(embeddings.iterrows()):
+                self.embedding.at[emb_idx, 'embedding'] = transformed_features[idx]
         
             kmeans = KMeans(n_clusters=self.num_senses, random_state=0)
-            kmeans.fit(features)
+            kmeans.fit(transformed_features)
             centers = kmeans.cluster_centers_
 
             # Store each sense embedding for this word
@@ -61,55 +88,33 @@ class SenseEmbeddingsInitializer:
                 sense_idx = int(parts[1])
                 embedding = sense_emb_table[word]
                 sense_records.append({
-                    'word': word_name,
+                    'word_id': self.vocab[self.vocab['word'] == word_name]['id'].values[0],
                     'sense_id': sense_idx,
                     'embedding': embedding.tolist()
                 })
         
         sense_df = pd.DataFrame(sense_records)
+
         return sense_df
-        
-class OutputEmbeddingsInitializer:
-    """
-    Initialize Output Embedding Matrix O with Gaussian distribution.
-    Shape: (vocab_size, 300)
-    """
-    def __init__(self, vocab: pd.DataFrame, embedding_dim: int = 300):
-        self.vocab = vocab
-        self.vocab_size = len(vocab)
-        self.embedding_dim = embedding_dim
 
     def __call__(self) -> torch.Tensor:
-        """
-        Returns:
-            torch.Tensor: Output embedding matrix of shape (vocab_size, 300)
-        """
-        print(f"Initializing Output Embeddings: shape ({self.vocab_size}, {self.embedding_dim})")
+        ipca = self._fit_ipca()
+        sense_df = self._cluster_embeddings(ipca)
         
-        # Initialize with Gaussian distribution (mean=0, std=0.01)
-        O = torch.randn(self.vocab_size, self.embedding_dim) * 0.01
+        # Convert sense_df to tensor [n_vocab, n_sense, dim]
+        # Handle non-incremental word_id order by using max word_id + 1 as size
+        n_sense = self.num_senses
+        dim = self.embedding_dim
         
-        print(f"✓ Output Embeddings initialized: {O.shape}")
-        return O
-    
-class ProjectionMatricesInitializer:
-    """
-    Initialize Projection Matrix P with Gaussian distribution.
-    Shape: (768, 300) - reduces BERT dimension (768) to model dimension (300)
-    """
-    def __init__(self, bert_dim: int = 768, embedding_dim: int = 300):
-        self.bert_dim = bert_dim
-        self.embedding_dim = embedding_dim
-
-    def __call__(self) -> torch.Tensor:
-        """
-        Returns:
-            torch.Tensor: Projection matrix of shape (768, 300)
-        """
-        print(f"Initializing Projection Matrix: shape ({self.bert_dim}, {self.embedding_dim})")
+        # Get the maximum word_id to determine tensor size
+        max_word_id = sense_df['word_id'].max()
+        n_vocab = max_word_id + 1  # Size needs to accommodate the largest index
         
-        # Initialize with Gaussian distribution (mean=0, std=0.01)
-        P = torch.randn(self.bert_dim, self.embedding_dim) * 0.01
+        sense_tensor = torch.zeros(n_vocab, n_sense, dim)
+        for _, row in sense_df.iterrows():
+            word_id = int(row['word_id'])
+            sense_id = int(row['sense_id'])
+            embedding = torch.tensor(row['embedding'], dtype=torch.float32)
+            sense_tensor[word_id, sense_id, :] = embedding
         
-        print(f"✓ Projection Matrix initialized: {P.shape}")
-        return P
+        return sense_tensor, self.embedding

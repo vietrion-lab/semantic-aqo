@@ -3,6 +3,7 @@ from typing import List, Dict
 from sensate.pipeline.preprocessing.corpus_pipeline import PairGenerator, BERTEmbeddingGenerator
 from sensate.schema.config_schema import BaseTableEntry
 
+import torch
 
 class TrainingSampleGenerator:
     def __init__(self, window_size: int = 2, foundation_model_name: str = None):
@@ -17,9 +18,9 @@ class TrainingSampleGenerator:
         """
         4 tables:
         - vocab_table: DataFrame with columns [word, id]
-        - query_table: DataFrame with columns [id, sql_query]
+        - query_table: DataFrame with columns [id, sql_query, sql_length]
         - embedding_table: DataFrame with columns [id, embedding]
-        - base_table: DataFrame with columns [id, center_word_id, context_word_id, embedding_id, sql_query_id]
+        - base_table: DataFrame with columns [id, center_word_id, center_pos, context_word_id, embedding_id, sql_query_id]
         """
         # Step 1: Generate pairs (center-context) and contextual BERT embeddings
             
@@ -28,6 +29,7 @@ class TrainingSampleGenerator:
 
         vocab_dict, query_dict, embedding_dict, base_list = {}, {}, {}, []
         embedding_id_map = {}  # (token, query_id) -> embedding_id
+        token_position_map = {}  # (token, query_id) -> position in query
 
         # Step 2: Build vocabulary
         unique_words = set(word for sentence in corpus for word in sentence)
@@ -36,9 +38,17 @@ class TrainingSampleGenerator:
             self.word_id_counter += 1
 
         # Step 3: Build query table
+        query_list = []
         for i, sentence in enumerate(corpus):
-            query_dict[i] = " ".join(sentence)
+            query_list.append({
+                'id': i,
+                'sql_query': " ".join(sentence),
+                'sql_length': len(sentence)
+            })
             self.query_id_counter += 1
+            # Track position of each token in the query
+            for pos, token in enumerate(sentence):
+                token_position_map[(token, i)] = pos
 
         # Step 4: Build embedding table (unique per token per query)
         for query_id, emb_dict in enumerate(embeddings):
@@ -56,6 +66,7 @@ class TrainingSampleGenerator:
                 base_entry = {
                     'id': self.next_id,
                     'center_word_id': vocab_dict[center],
+                    'center_pos': token_position_map[(center, query_id)],
                     'context_word_id': vocab_dict[context],
                     'embedding_id': embedding_id_map[(center, query_id)],
                     'sql_query_id': query_id
@@ -65,7 +76,7 @@ class TrainingSampleGenerator:
 
         # Convert to pandas DataFrames
         vocab_table = pd.DataFrame(list(vocab_dict.items()), columns=['word', 'id'])
-        query_table = pd.DataFrame(list(query_dict.items()), columns=['id', 'sql_query'])
+        query_table = pd.DataFrame(query_list)
         embedding_table = pd.DataFrame(list(embedding_dict.items()), columns=['id', 'embedding'])
         base_table = pd.DataFrame(base_list)
 
