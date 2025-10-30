@@ -14,9 +14,8 @@ if __name__ == "__main__":
     
     # Start training
     print("🔥 Starting training...")
-    trainer.fit(data)
-    
-    # Optional: Save model
-    # trainer.save_model("output/model")
+    trainer.prepare(data)
+    trainer.fit()
+    trainer.save_model("../output/model")
     
     print("✅ Training completed!")

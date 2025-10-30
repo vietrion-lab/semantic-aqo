@@ -244,16 +244,33 @@ class PreprocessingPipeline:
     
     def _sql_to_tokens(self, sql: str) -> List[str]:
         """Convert SQL string to list of tokens."""
-        # Simple tokenization by splitting on whitespace and punctuation
+        # Tokenization that preserves special tokens like <ALIAS_T1>
         tokens = []
         current_token = ""
+        in_special_token = False
         
         for char in sql:
-            if char in ' \t\n\r':
+            if char == '<':
+                # Start of a special token
                 if current_token:
                     tokens.append(current_token)
                     current_token = ""
-            elif char in '(),;.=<>!':
+                in_special_token = True
+                current_token = char
+            elif char == '>' and in_special_token:
+                # End of a special token
+                current_token += char
+                tokens.append(current_token)
+                current_token = ""
+                in_special_token = False
+            elif in_special_token:
+                # Inside a special token, keep accumulating
+                current_token += char
+            elif char in ' \t\n\r':
+                if current_token:
+                    tokens.append(current_token)
+                    current_token = ""
+            elif char in '(),;.=!':
                 if current_token:
                     tokens.append(current_token)
                     current_token = ""
