@@ -303,49 +303,54 @@ class PreprocessingPipeline:
         
         return [t for t in tokens if t.strip()]
     
-    def __call__(self, batch: List[str]) -> List[List[str]]:
+    def __call__(self, batch: List[str], verbose: bool = True) -> List[List[str]]:
         """
         Process a batch of queries.
+        
+        Args:
+            batch: List of SQL query strings
+            verbose: If True, show progress bar. If False, silent processing.
         
         Returns list of token lists (matching old output format).
         """
         results = []
-        for query in tqdm(batch, desc="Preprocessing queries", unit="query"):
+        iterator = tqdm(batch, desc="Preprocessing queries", unit="query") if verbose else batch
+        for query in iterator:
             processed_sql, tokens, mapping = self.tokenize(query)
             results.append(tokens)
         return results
 
 
-if __name__ == "__main__":
-    pipeline = PreprocessingPipeline()
+# if __name__ == "__main__":
+#     pipeline = PreprocessingPipeline()
     
-    # Test cases covering various SQL patterns
-    test_queries = [
-        "DELETE FROM Employees WHERE EmployeeID = 2;",
-        "SELECT u.name, SUM(o.amount) AS total FROM users u JOIN orders o ON u.user_id = o.id WHERE u.age >= 21",
-        "UPDATE products SET price = 99.99 WHERE category = 'electronics'",
-        "INSERT INTO customers VALUES (1, 'John Doe', '2023-01-15')",
-        """SELECT u.name, SUM(o.amount) AS total
-FROM users u
-JOIN orders o ON o.user_id = u.id
-WHERE u.age >= 21 AND o.status IN ('paid','shipped')
-GROUP BY u.name
-ORDER BY total DESC""",
-        "SELECT * FROM #temp_table WHERE id = 1",  # T-SQL temp table
-        "SELECT a.id, b.name FROM table1 a, table2 b WHERE a.id = b.id",  # Comma join
-        "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",  # CTE
-    ]
+#     # Test cases covering various SQL patterns
+#     test_queries = [
+#         "DELETE FROM Employees WHERE EmployeeID = 2;",
+#         "SELECT u.name, SUM(o.amount) AS total FROM users u JOIN orders o ON u.user_id = o.id WHERE u.age >= 21",
+#         "UPDATE products SET price = 99.99 WHERE category = 'electronics'",
+#         "INSERT INTO customers VALUES (1, 'John Doe', '2023-01-15')",
+#         """SELECT u.name, SUM(o.amount) AS total
+# FROM users u
+# JOIN orders o ON o.user_id = u.id
+# WHERE u.age >= 21 AND o.status IN ('paid','shipped')
+# GROUP BY u.name
+# ORDER BY total DESC""",
+#         "SELECT * FROM #temp_table WHERE id = 1",  # T-SQL temp table
+#         "SELECT a.id, b.name FROM table1 a, table2 b WHERE a.id = b.id",  # Comma join
+#         "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",  # CTE
+#     ]
     
-    print("=== Robust SQL Preprocessing Pipeline ===\n")
+#     print("=== Robust SQL Preprocessing Pipeline ===\n")
     
-    for i, query in enumerate(test_queries, 1):
-        print(f"Test {i}:")
-        print(f"Original: {query[:80]}...")
-        processed_sql, tokens, mapping = pipeline.tokenize(query)
-        print(f"\nProcessed SQL:")
-        print(processed_sql)
-        print(f"\nMapping:")
-        for line in mapping:
-            print(f"  {line}")
-        print(f"\nTokens: {tokens[:20]}...")  # Show first 20 tokens
-        print("-" * 80)
+#     for i, query in enumerate(test_queries, 1):
+#         print(f"Test {i}:")
+#         print(f"Original: {query[:80]}...")
+#         processed_sql, tokens, mapping = pipeline.tokenize(query)
+#         print(f"\nProcessed SQL:")
+#         print(processed_sql)
+#         print(f"\nMapping:")
+#         for line in mapping:
+#             print(f"  {line}")
+#         print(f"\nTokens: {tokens[:20]}...")  # Show first 20 tokens
+#         print("-" * 80)

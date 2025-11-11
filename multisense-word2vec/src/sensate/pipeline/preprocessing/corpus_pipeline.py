@@ -31,8 +31,8 @@ class PairGenerator:
 
 
 class BERTEmbeddingGenerator:
-    def __init__(self, foundation_model_name: str = None):
-        self.extractor = BERTExtractor(model_name=foundation_model_name)
+    def __init__(self, foundation_model_name: str = None, ipca=None):
+        self.extractor = BERTExtractor(model_name=foundation_model_name, ipca=ipca)
 
     def __call__(self, corpus: List[List[str]]) -> List[Dict[str, list]]:
         """

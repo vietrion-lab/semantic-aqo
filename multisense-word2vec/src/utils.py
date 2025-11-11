@@ -37,7 +37,7 @@ def load_data(owner: str, dataset_name: str) -> list:
     # Setup auth first
     setup_huggingface_auth()
     dataset = load_dataset(f"{owner}/{dataset_name}")['train']
-    return dataset['statement']
+    return dataset[:10]['statement']
 
 def load_config(path: str) -> GlobalConfigSchema:
     with open(path, 'r') as file:

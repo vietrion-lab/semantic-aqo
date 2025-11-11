@@ -6,9 +6,9 @@ from sensate.schema.config_schema import BaseTableEntry
 import torch
 
 class TrainingSampleGenerator:
-    def __init__(self, window_size: int = 2, foundation_model_name: str = None):
+    def __init__(self, window_size: int = 2, foundation_model_name: str = None, ipca=None):
         self.pair_generator = PairGenerator(window_size=window_size)
-        self.embedding_generator = BERTEmbeddingGenerator(foundation_model_name=foundation_model_name)
+        self.embedding_generator = BERTEmbeddingGenerator(foundation_model_name=foundation_model_name, ipca=ipca)
         self.next_id = 0
         self.word_id_counter = 0
         self.query_id_counter = 0

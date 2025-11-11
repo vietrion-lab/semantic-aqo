@@ -21,26 +21,22 @@ class GatingNetworkLayer(nn.Module):
     ):
         batch_size = center_pos.shape[0]
         
-        v = context_sense_embeddings.mean(dim=-2)  # [B, T-1, D]
+        v = context_sense_embeddings.mean(dim=-2)  # [B, T-1, D] - mean over K dimension
         a = torch.matmul(center_sense_embeddings, v.transpose(1, 2)) / math.sqrt(self.d)  # [B, K, T-1]
         a = a.transpose(1, 2)  # [B, T-1, K]
         
-        # Create position indices for context (excluding center)
+        # Vectorized position computation
         _, T = query_token_ids.shape
         pos = torch.arange(T, device=query_token_ids.device).unsqueeze(0).expand(batch_size, -1)  # [B, T]
         
-        # Exclude center_pos from positions
-        context_positions = []
-        for b in range(batch_size):
-            context_pos = torch.cat([
-                pos[b, :center_pos[b]],
-                pos[b, center_pos[b]+1:]
-            ])  # [T-1]
-            context_positions.append(context_pos)
-        context_positions = torch.stack(context_positions, dim=0)  # [B, T-1]
+        # Create mask to exclude center position
+        mask = pos != center_pos.unsqueeze(1)  # [B, T]
+        context_positions = pos[mask].view(batch_size, -1)  # [B, T-1]
         
-        # Compute positional weights for context positions only
-        w = torch.exp(- (context_positions - center_pos.unsqueeze(1)).abs() / self.sigma)  # [B, T-1]
+        # Compute positional weights
+        w = torch.exp(- (context_positions - center_pos.unsqueeze(1)).abs().float() / self.sigma)  # [B, T-1]
+        
+        # Apply positional weights to attention
         alpha = torch.softmax(a + (w.clamp_min(1e-12).log()).unsqueeze(-1), dim=1)  # [B, T-1, K]
         
         s = F.cosine_similarity(center_sense_embeddings, torch.matmul(alpha.transpose(1, 2), v), dim=-1)  # [B, K]

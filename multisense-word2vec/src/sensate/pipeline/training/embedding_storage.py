@@ -184,19 +184,29 @@ class MemoryEfficientEmbeddingTable:
     def close(self):
         """Close HDF5 file."""
         if self.h5_file is not None:
-            self.h5_file.close()
-            self.h5_file = None
+            try:
+                self.h5_file.close()
+            except:
+                pass  # Ignore errors if already closed
+            finally:
+                self.h5_file = None
     
     def cleanup(self):
         """Clean up temporary files."""
         self.close()
         if self.is_temp and os.path.exists(self.storage_path):
-            os.remove(self.storage_path)
-            print(f"🗑️  Cleaned up temporary storage: {self.storage_path}")
+            try:
+                os.remove(self.storage_path)
+                print(f"🗑️  Cleaned up temporary storage: {self.storage_path}")
+            except:
+                pass  # Ignore if file already deleted
     
     def __del__(self):
         """Destructor to ensure file is closed."""
-        self.close()
+        try:
+            self.close()
+        except:
+            pass  # Ignore all errors during cleanup
 
 
 def optimize_embedding_table(embedding_table: pd.DataFrame, 

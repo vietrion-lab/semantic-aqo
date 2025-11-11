@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import torch
 from sklearn.cluster import KMeans
-from sklearn.decomposition import IncrementalPCA
 
 class SenseEmbeddingsInitializer:
     def __init__(self, 
@@ -25,41 +24,9 @@ class SenseEmbeddingsInitializer:
         self.embedding_dim = embedding_dim
         self.num_senses = num_senses
         
-    def _fit_ipca(self) -> IncrementalPCA:
-        ipca = IncrementalPCA(n_components=self.embedding_dim, batch_size=3000)
-        reduction_embeddings = []
-        
-        for _, row in tqdm(self.vocab.iterrows(), desc="Fitting IPCA", unit="word"):
-            id = row['id']
-            embedding_ids = self.base_table[self.base_table['center_word_id'] == id]['embedding_id'].unique()
-            embeddings = self.embedding[self.embedding['id'].isin(embedding_ids)]
-            for emb in embeddings.itertuples():
-                reduction_embeddings.append(emb.embedding)
-            
-        print(f"Fitting IncrementalPCA with {len(reduction_embeddings)} embeddings.")
-        
-        batch_size = 3000
-        for i in tqdm(range(0, len(reduction_embeddings), batch_size), desc="Fitting IPCA", unit="batch"):
-            batch_embeddings = reduction_embeddings[i:min(i+batch_size, len(reduction_embeddings))]
-            ipca.partial_fit(batch_embeddings)
-        retained_var = ipca.explained_variance_ratio_.sum()
-        print(f"✓ Retained variance {retained_var:.4f}")
-        
-        return ipca
-    
-    def _cluster_embeddings(self, ipca: IncrementalPCA):
+    def _cluster_embeddings(self):
         # Initialize sense embeddings based on base_table and vocab
         print(f"Clustering {self.num_senses} Sense Embedding for {len(self.vocab)} words.")
-        
-        # FIRST: Transform ALL embeddings to the target dimension
-        print(f"Transforming all {len(self.embedding)} embeddings to {self.embedding_dim} dimensions...")
-        all_embeddings = np.array(self.embedding['embedding'].tolist())
-        transformed_all = ipca.transform(all_embeddings)
-        
-        # Update the embedding table with transformed embeddings
-        for idx, transformed_emb in enumerate(transformed_all):
-            self.embedding.at[idx, 'embedding'] = transformed_emb.tolist()
-        print(f"✓ All embeddings transformed from 768-dim to {self.embedding_dim}-dim")
         
         sense_emb_table = {}
         
@@ -72,7 +39,7 @@ class SenseEmbeddingsInitializer:
             assert len(embeddings) >= self.num_senses, \
                 f"  Not enough embeddings ({len(embeddings)}) for word '{word}' to form {self.num_senses} senses."
             
-            # Get already-transformed features
+            # Embeddings are already in target dimension (150-dim)
             features = np.array(embeddings['embedding'].tolist())
         
             kmeans = KMeans(n_clusters=self.num_senses, random_state=0)
@@ -103,8 +70,7 @@ class SenseEmbeddingsInitializer:
         return sense_df
 
     def __call__(self) -> torch.Tensor:
-        ipca = self._fit_ipca()
-        sense_df = self._cluster_embeddings(ipca)
+        sense_df = self._cluster_embeddings()
         
         # Convert sense_df to tensor [n_vocab, n_sense, dim]
         # Handle non-incremental word_id order by using max word_id + 1 as size

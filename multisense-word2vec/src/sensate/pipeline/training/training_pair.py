@@ -3,6 +3,7 @@ from torch.nn.utils.rnn import pad_sequence
 import torch
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 from sensate.pipeline.training.embedding_storage import MemoryEfficientEmbeddingTable
 
 def collate_fn(batch):
@@ -11,8 +12,6 @@ def collate_fn(batch):
     Pads sequences to the same length within a batch.
     """
     center_pos = torch.stack([item['center_pos'] for item in batch])
-    
-    # Stack context_ids - already single values per sample
     context_ids = torch.stack([item['context_ids'] for item in batch])
     
     # Pad query_token_ids to max length in batch
@@ -22,7 +21,6 @@ def collate_fn(batch):
         padding_value=0
     )
     
-    # Stack BERT embeddings
     bert_embeddings = torch.stack([item['bert_embeddings'] for item in batch])
     
     return {
@@ -36,53 +34,56 @@ class TrainingPairDataset(Dataset):
     def __init__(self,
             base_table: pd.DataFrame,
             vocab_table: pd.DataFrame,
-            bert_embedding_table,  # Can be DataFrame or MemoryEfficientEmbeddingTable
+            bert_embedding_table,
             query_table: pd.DataFrame
         ):
-        # Convert to structured arrays for efficient access
-        self.base_table = base_table.to_records(index=False)
-        self.vocab_table = vocab_table.to_records(index=False)
+        print("🚀 Precomputing dataset for fast training...")
         
-        # Handle both DataFrame and MemoryEfficientEmbeddingTable
+        # Precompute all data as tensors to avoid lookups during training
+        n_samples = len(base_table)
+        
+        # Extract base table data
+        center_pos_list = base_table['center_pos'].values
+        context_ids_list = base_table['context_word_id'].values
+        query_ids_list = base_table['sql_query_id'].values
+        
+        # Create word->id mapping for O(1) lookup
+        word_to_id = dict(zip(vocab_table['word'].values, vocab_table['id'].values))
+        
+        # Create query_id->embedding mapping
         if isinstance(bert_embedding_table, MemoryEfficientEmbeddingTable):
-            self.bert_embedding_table = bert_embedding_table.to_records(index=False)
+            embedding_df = bert_embedding_table.to_dataframe()
         else:
-            self.bert_embedding_table = bert_embedding_table.to_records(index=False)
+            embedding_df = bert_embedding_table
         
-        self.query_table = query_table.to_records(index=False)
+        embedding_dict = dict(zip(embedding_df['id'].values, embedding_df['embedding'].values))
+        
+        # Precompute query token IDs (parse once, reuse forever)
+        query_token_ids_dict = {}
+        for _, row in tqdm(query_table.iterrows(), total=len(query_table), desc="Precomputing query tokens", unit="query"):
+            query_id = row['id']
+            tokens = row['sql_query'].split(' ')
+            token_ids = [word_to_id[token] for token in tokens if token in word_to_id]
+            query_token_ids_dict[query_id] = np.array(token_ids, dtype=np.int64)
+        
+        # Store precomputed tensors
+        self.center_pos = torch.from_numpy(center_pos_list).long()
+        self.context_ids = torch.from_numpy(context_ids_list).long()
+        self.query_ids = query_ids_list
+        self.query_token_ids_dict = query_token_ids_dict
+        self.embedding_dict = embedding_dict
+        
+        print(f"   ✓ Precomputed {n_samples} samples")
 
     def __len__(self):
-        return len(self.base_table)
+        return len(self.center_pos)
 
     def __getitem__(self, idx):
-        base_row = self.base_table[idx]
-        center_id = base_row['center_word_id']
-        center_pos = base_row['center_pos']
-        context_id = base_row['context_word_id']  # Single context ID from base_table
-        query_id = base_row['sql_query_id']
+        query_id = self.query_ids[idx]
         
-        # Get query information
-        query_mask = self.query_table['id'] == query_id
-        query_row = self.query_table[query_mask][0]
-        tokens = query_row['sql_query'].split(' ')
-        
-        # Get token IDs for the query
-        query_token_ids = []
-        for token in tokens:
-            token_mask = self.vocab_table['word'] == token
-            if np.any(token_mask):
-                query_token_ids.append(self.vocab_table[token_mask][0]['id'])
-        query_token_ids = np.array(query_token_ids, dtype=np.int64)
-        
-        # Get BERT embedding for this query
-        bert_mask = self.bert_embedding_table['id'] == query_id
-        bert_embedding = self.bert_embedding_table[bert_mask][0]['embedding']
-
-        row = {
-            'center_pos': torch.tensor(center_pos, dtype=torch.long),
-            'context_ids': torch.tensor(context_id, dtype=torch.long),  # Single context ID
-            'query_token_ids': torch.tensor(query_token_ids, dtype=torch.long),
-            'bert_embeddings': torch.tensor(bert_embedding, dtype=torch.float32),
+        return {
+            'center_pos': self.center_pos[idx],
+            'context_ids': self.context_ids[idx],
+            'query_token_ids': torch.from_numpy(self.query_token_ids_dict[query_id]).long(),
+            'bert_embeddings': torch.tensor(self.embedding_dict[query_id], dtype=torch.float32),
         }
-
-        return row

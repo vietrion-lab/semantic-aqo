@@ -84,18 +84,18 @@ class Sensate(nn.Module):
     ) -> torch.Tensor:
         batch_size = query_token_ids.shape[0]
         center_word_ids = query_token_ids[torch.arange(batch_size), center_pos]  # [B]
-        center_sense_embeddings = self.sense_embeddings[center_word_ids, :, :]  # [B, K, D]
+        center_sense_embeddings = self.sense_embeddings[center_word_ids, :, :]  # [B, K, D]: sense embedding of center words
         
-        all_query_sense_embeddings = self.sense_embeddings[query_token_ids, :, :]  # [B, T, K, D]
-        context_sense_embeddings = []
-        for b in range(batch_size):
-            # Concatenate all positions except center_pos[b]
-            contexts = torch.cat([
-                all_query_sense_embeddings[b, :center_pos[b], :, :],
-                all_query_sense_embeddings[b, center_pos[b]+1:, :, :]
-            ], dim=0)  # [T-1, K, D]
-            context_sense_embeddings.append(contexts)
-        context_sense_embeddings = torch.stack(context_sense_embeddings, dim=0)  # [B, T-1, K, D]
+        all_query_sense_embeddings = self.sense_embeddings[query_token_ids, :, :]  # [B, T, K, D]: sense embeddings for all query words (context words \in all query words)
+        
+        # Vectorized context extraction using masking
+        T = query_token_ids.shape[1]
+        pos_indices = torch.arange(T, device=query_token_ids.device).unsqueeze(0).expand(batch_size, -1)  # [B, T]
+        context_mask = pos_indices != center_pos.unsqueeze(1)  # [B, T]
+        
+        # Expand mask for sense dimensions
+        context_mask_expanded = context_mask.unsqueeze(-1).unsqueeze(-1).expand_as(all_query_sense_embeddings)  # [B, T, K, D]
+        context_sense_embeddings = all_query_sense_embeddings[context_mask_expanded].view(batch_size, T-1, self.num_senses, self.embedding_dim)  # [B, T-1, K, D]
         
         max_pooled_embedding, gating_probs = self.gating_network_layer(
             center_pos=center_pos,
@@ -105,11 +105,9 @@ class Sensate(nn.Module):
         ) # shape: (batch_size, embedding_dim), (batch_size, num_senses)
         
         # Word2vec SG naive softmax loss
-        # context_ids shape: [B], reshape to [B, 1] for gather operation
         L_w2v = -torch.log_softmax(max_pooled_embedding @ self.output_embeddings.T, dim=-1).gather(1, context_ids.unsqueeze(1)).mean()
 
         # Distillation loss
-        # Both should be embedding_dim (150) after IPCA transformation
         L_distill = ((max_pooled_embedding - bert_embeddings) ** 2).mean()
         
         # Orthogonality loss
@@ -125,6 +123,6 @@ class Sensate(nn.Module):
         # L2 regularization
         L2_reg = sum(p.pow(2).sum() for p in self.parameters())
         
-        total_loss = L_w2v + 0.5 * L_distill + 0.1 * L_orth + 0.01 * L_ent + 0.001 * L2_reg
+        total_loss = L_w2v + 0.3 * L_distill + 0.1 * L_orth + 0.01 * L_ent + 0.001 * L2_reg
 
         return total_loss

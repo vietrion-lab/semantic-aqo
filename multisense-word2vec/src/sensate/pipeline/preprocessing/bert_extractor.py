@@ -1,5 +1,6 @@
 from typing import List
 import torch
+import numpy as np
 from transformers import RobertaTokenizer, RobertaModel
 
 from sensate.factory.common import device
@@ -11,14 +12,16 @@ class BERTExtractor:
     the last 4 hidden layers of BERT for a <mask> token.
     
     Formula: h_t = 1/4 * Σ(ĥ_t) where ĥ_t are the last 4 layers
+    Optionally projects to lower dimension using IPCA for RAM efficiency.
     """
     
-    def __init__(self, model_name: str = None):
+    def __init__(self, model_name: str = None, ipca=None):
         """
         Initialize the BERT extractor with a pre-trained model.
         
         Args:
             model_name: Name of the pre-trained BERT model from Hugging Face
+            ipca: Optional IncrementalPCA model for dimension reduction
         """
         assert model_name is not None, "A foundation model name must be provided"
         print(f"🔧 Loading BERT model: {model_name}")
@@ -31,8 +34,12 @@ class BERTExtractor:
         # Move model to GPU if available
         self.model.to(device)
         self.model.eval()  # Set to evaluation mode
+        self.ipca = ipca
         
-        print(f"✅ BERT model loaded successfully on {device}")
+        if self.ipca is not None:
+            print(f"✅ BERT model loaded with IPCA projection (768 -> {self.ipca.n_components} dim)")
+        else:
+            print(f"✅ BERT model loaded successfully on {device}")
     
     def __call__(self, tokens: List[str]) -> list:
         """
@@ -98,8 +105,14 @@ class BERTExtractor:
         stacked_embeddings = torch.stack(mask_embeddings)  # Shape: (4, 768)
         averaged_embedding = torch.mean(stacked_embeddings, dim=0)  # Shape: (768,)
         
+        # Convert to numpy and apply IPCA if available
+        embedding_np = averaged_embedding.cpu().numpy()
+        
+        if self.ipca is not None:
+            embedding_np = self.ipca.transform(embedding_np.reshape(1, -1))[0]
+        
         # Convert to list and return
-        return averaged_embedding.cpu().tolist()
+        return embedding_np.tolist()
     
     def batch_extract(self, batch_tokens: List[List[str]]) -> List[list]:
         """
@@ -170,9 +183,14 @@ class BERTExtractor:
             averaged_embedding = torch.mean(stacked_embeddings, dim=0)  # Shape: (768,)
             
             # Convert to list and add to batch results
-            batch_embeddings.append(averaged_embedding.cpu().tolist())
+            batch_embeddings.append(averaged_embedding.cpu().numpy())
         
-        return batch_embeddings
+        # Apply IPCA projection to entire batch if available
+        if self.ipca is not None:
+            batch_embeddings = self.ipca.transform(np.array(batch_embeddings))
+        
+        # Convert to list
+        return [emb.tolist() for emb in batch_embeddings]
 
 
 
