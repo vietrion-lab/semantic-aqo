@@ -33,13 +33,14 @@ class PreprocessingPipeline:
             # Temp tables indicate T-SQL
             return 'tsql'
         # Try common dialects
-        for dialect in ['postgres', 'mysql', 'tsql', 'bigquery']:
+        for dialect in ['postgres', 'mysql', 'tsql', 'bigquery', 'sqlite', 'oracle']:
             try:
                 sqlglot.parse_one(sql, read=dialect)
                 return dialect
             except:
                 continue
-        return 'ansi'
+        # Default to postgres as it's the most permissive SQL dialect
+        return 'postgres'
     
     def _next_alias(self) -> str:
         """Generate next table alias token."""

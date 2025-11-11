@@ -3,6 +3,7 @@ from torch.nn.utils.rnn import pad_sequence
 import torch
 import pandas as pd
 import numpy as np
+from sensate.pipeline.training.embedding_storage import MemoryEfficientEmbeddingTable
 
 def collate_fn(batch):
     """
@@ -35,13 +36,19 @@ class TrainingPairDataset(Dataset):
     def __init__(self,
             base_table: pd.DataFrame,
             vocab_table: pd.DataFrame,
-            bert_embedding_table: pd.DataFrame,
+            bert_embedding_table,  # Can be DataFrame or MemoryEfficientEmbeddingTable
             query_table: pd.DataFrame
         ):
         # Convert to structured arrays for efficient access
         self.base_table = base_table.to_records(index=False)
         self.vocab_table = vocab_table.to_records(index=False)
-        self.bert_embedding_table = bert_embedding_table.to_records(index=False)
+        
+        # Handle both DataFrame and MemoryEfficientEmbeddingTable
+        if isinstance(bert_embedding_table, MemoryEfficientEmbeddingTable):
+            self.bert_embedding_table = bert_embedding_table.to_records(index=False)
+        else:
+            self.bert_embedding_table = bert_embedding_table.to_records(index=False)
+        
         self.query_table = query_table.to_records(index=False)
 
     def __len__(self):

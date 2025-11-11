@@ -51,6 +51,16 @@ class SenseEmbeddingsInitializer:
         # Initialize sense embeddings based on base_table and vocab
         print(f"Clustering {self.num_senses} Sense Embedding for {len(self.vocab)} words.")
         
+        # FIRST: Transform ALL embeddings to the target dimension
+        print(f"Transforming all {len(self.embedding)} embeddings to {self.embedding_dim} dimensions...")
+        all_embeddings = np.array(self.embedding['embedding'].tolist())
+        transformed_all = ipca.transform(all_embeddings)
+        
+        # Update the embedding table with transformed embeddings
+        for idx, transformed_emb in enumerate(transformed_all):
+            self.embedding.at[idx, 'embedding'] = transformed_emb.tolist()
+        print(f"✓ All embeddings transformed from 768-dim to {self.embedding_dim}-dim")
+        
         sense_emb_table = {}
         
         for _, row in tqdm(self.vocab.iterrows(), desc="Initializing Sense Embeddings", unit="word"):
@@ -62,16 +72,11 @@ class SenseEmbeddingsInitializer:
             assert len(embeddings) >= self.num_senses, \
                 f"  Not enough embeddings ({len(embeddings)}) for word '{word}' to form {self.num_senses} senses."
             
+            # Get already-transformed features
             features = np.array(embeddings['embedding'].tolist())
-            transformed_features = ipca.transform(features)
-            
-            # Update each transformed embedding in the correct position
-            # Important: We need to match the order of embeddings DataFrame, not embedding_ids
-            for idx, (emb_idx, emb_row) in enumerate(embeddings.iterrows()):
-                self.embedding.at[emb_idx, 'embedding'] = transformed_features[idx]
         
             kmeans = KMeans(n_clusters=self.num_senses, random_state=0)
-            kmeans.fit(transformed_features)
+            kmeans.fit(features)
             centers = kmeans.cluster_centers_
 
             # Store each sense embedding for this word

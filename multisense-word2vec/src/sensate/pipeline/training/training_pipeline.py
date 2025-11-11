@@ -50,10 +50,11 @@ class Trainer:
             num_senses=self.config.training.num_senses,
             embedding_dim=self.config.training.embedding_dim
         )
+        # Use the model's transformed embedding_table (150-dim after IPCA)
         dataset = TrainingPairDataset(
             base_table=self.base_table,
             vocab_table=self.vocab_table,
-            bert_embedding_table=self.embedding_table,
+            bert_embedding_table=self.model.embedding_table,  # Use model's transformed version!
             query_table=self.query_table,
         )
         dataloader = torch.utils.data.DataLoader(

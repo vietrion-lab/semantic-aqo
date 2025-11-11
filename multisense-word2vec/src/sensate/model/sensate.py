@@ -7,6 +7,7 @@ from sensate.pipeline.training.initialization import (
     SenseEmbeddingsInitializer
 )
 from sensate.model.gating_network_layer import GatingNetworkLayer
+from sensate.pipeline.training.embedding_storage import optimize_embedding_table
 
 
 
@@ -26,24 +27,41 @@ class Sensate(nn.Module):
         super(Sensate, self).__init__()
         self.base_table = base_table
         self.vocab_table = vocab_table
-        self.embedding_table = embedding_table
+        # Optimize embedding table storage to save memory
+        print("🔧 Optimizing embedding table for memory efficiency...")
+        self.embedding_table = optimize_embedding_table(
+            embedding_table,
+            cache_size=10000,
+            use_float16=True  # Save 50% memory with float16
+        )
         self.query_table = query_table
         self.num_senses = num_senses
         self.embedding_dim = embedding_dim
         self.gating_network_layer = GatingNetworkLayer(sigma=0.001, d=embedding_dim)
         
         # Initialize
-        sense_embeddings, self.embedding_table = SenseEmbeddingsInitializer(
+        # Convert embedding_table back to DataFrame for initialization (only temporarily)
+        embedding_df = self.embedding_table.to_dataframe()
+        sense_embeddings, updated_embedding_df = SenseEmbeddingsInitializer(
             base_table=base_table, 
             vocab=vocab_table, 
-            embedding=embedding_table,
+            embedding=embedding_df,
             embedding_dim=embedding_dim,
             num_senses=num_senses
         )()
-        if len(self.embedding_table) > 0:
-            print(f"    Each Embedding Shape: {len(self.embedding_table['embedding'].iloc[0])} dims")
+        
+        # Re-optimize the updated embedding table
+        del self.embedding_table  # Free old storage
+        self.embedding_table = optimize_embedding_table(
+            updated_embedding_df,
+            cache_size=10000,
+            use_float16=True
+        )
+        
+        if len(updated_embedding_df) > 0:
+            print(f"    Each Embedding Shape: {len(updated_embedding_df['embedding'].iloc[0])} dims")
             # Check if all embedding dim not match
-            assert all(len(emb) == embedding_dim for emb in self.embedding_table['embedding']), \
+            assert all(len(emb) == embedding_dim for emb in updated_embedding_df['embedding']), \
                 "All embeddings must have the correct embedding_dim"
         
 
@@ -91,6 +109,7 @@ class Sensate(nn.Module):
         L_w2v = -torch.log_softmax(max_pooled_embedding @ self.output_embeddings.T, dim=-1).gather(1, context_ids.unsqueeze(1)).mean()
 
         # Distillation loss
+        # Both should be embedding_dim (150) after IPCA transformation
         L_distill = ((max_pooled_embedding - bert_embeddings) ** 2).mean()
         
         # Orthogonality loss
