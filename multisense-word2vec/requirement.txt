@@ -5,7 +5,7 @@ PyYAML==6.0.2
 typing-inspection==0.4.1
 typing_extensions==4.15.0
 torch>=2.0.0
-transformers>
+transformers
 pandas>=2.0.0
 tqdm>=4.65.0
 sqlglot>=25.0.0
