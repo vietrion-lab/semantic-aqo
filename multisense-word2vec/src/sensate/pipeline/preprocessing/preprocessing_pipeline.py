@@ -29,17 +29,27 @@ class PreprocessingPipeline:
     
     def _detect_dialect(self, sql: str) -> str:
         """Detect SQL dialect based on syntax hints."""
+        # Quick heuristics for common dialects
+        sql_lower = sql.lower()
+        
         if '#' in sql or '##' in sql:
-            # Temp tables indicate T-SQL
             return 'tsql'
-        # Try common dialects
-        for dialect in ['postgres', 'mysql', 'tsql', 'bigquery', 'sqlite', 'oracle']:
+        if 'isnull(' in sql_lower:
+            return 'tsql'
+        if 'ifnull(' in sql_lower:
+            return 'mysql'
+        if 'nvl(' in sql_lower:
+            return 'oracle'
+            
+        # Try parsing with common dialects (suppress warnings)
+        for dialect in ['postgres', 'mysql', 'tsql', 'sqlite']:
             try:
-                sqlglot.parse_one(sql, read=dialect)
+                sqlglot.parse_one(sql, read=dialect, error_level=None)
                 return dialect
             except:
                 continue
-        # Default to postgres as it's the most permissive SQL dialect
+        
+        # Default to postgres as it's the most permissive
         return 'postgres'
     
     def _next_alias(self) -> str:
@@ -218,8 +228,12 @@ class PreprocessingPipeline:
         self.dialect = self._detect_dialect(sql)
         
         try:
-            # Parse SQL to AST
-            ast = sqlglot.parse_one(sql, read=self.dialect)
+            # Parse SQL to AST (suppress warnings)
+            ast = sqlglot.parse_one(sql, read=self.dialect, error_level=None)
+            
+            if ast is None:
+                # Parsing failed, use fallback
+                return self._fallback_tokenize(sql)
             
             # First pass: collect all table aliases
             self._collect_table_aliases(ast)
@@ -238,10 +252,15 @@ class PreprocessingPipeline:
             
             return processed_sql, tokens, mapping
         
-        except Exception as e:
-            # Fallback to simple tokenization if parsing fails
-            print(f"Warning: Failed to parse SQL with sqlglot: {e}")
-            return sql, [], []
+        except Exception:
+            # Fallback to simple tokenization if parsing fails (silently)
+            return self._fallback_tokenize(sql)
+    
+    def _fallback_tokenize(self, sql: str) -> Tuple[str, List[str], List[str]]:
+        """Simple fallback tokenization when sqlglot fails."""
+        # Just split on whitespace and basic punctuation
+        tokens = self._sql_to_tokens(sql)
+        return sql, tokens, []
     
     def _sql_to_tokens(self, sql: str) -> List[str]:
         """Convert SQL string to list of tokens."""
