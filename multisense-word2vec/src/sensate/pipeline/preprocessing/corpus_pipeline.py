@@ -14,7 +14,7 @@ class PairGenerator:
         right_end = min(len(tokens), center_idx + self.window_size + 1)
         right_contexts = tokens[center_idx + 1:right_end]
         return left_contexts + right_contexts
-
+ 
     def generate_center_context_pair(self, tokens: List[str]) -> List[List[str]]:
         # Purpose: Generate pairs [center, context] for a single tokenized sentence
         pairs = []
