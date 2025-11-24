@@ -371,8 +371,12 @@ class PreprocessingPipeline:
             # Return list of tokens
             processed_string = self.tokenize(query_or_batch)
             return processed_string.split()
-        elif isinstance(query_or_batch, list):
+        elif isinstance(query_or_batch, (list, tuple)):
             # Return list of token lists
             return [self.tokenize(query).split() for query in query_or_batch]
         else:
-            raise TypeError("Input must be a string or list of strings")
+            # Handle other iterables (like HuggingFace dataset columns)
+            try:
+                return [self.tokenize(str(query)).split() for query in query_or_batch]
+            except TypeError:
+                raise TypeError(f"Input must be a string or iterable of strings, got {type(query_or_batch)}")
