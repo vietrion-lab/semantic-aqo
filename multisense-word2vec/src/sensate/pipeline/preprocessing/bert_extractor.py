@@ -31,15 +31,23 @@ class BERTExtractor:
             output_hidden_states=True  # Required to get all layer outputs
         )
         
-        # Move model to GPU if available
+        # Move model to GPU if available and optimize for inference
         self.model.to(device)
         self.model.eval()  # Set to evaluation mode
+        
+        # Enable TF32 for faster computation on Ampere GPUs (RTX 30xx, A100, etc.)
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            # Optimize CUDA kernels
+            torch.backends.cudnn.benchmark = True
+        
         self.ipca = ipca
         
         if self.ipca is not None:
             print(f"✅ BERT model loaded with IPCA projection (768 -> {self.ipca.n_components} dim)")
         else:
-            print(f"✅ BERT model loaded successfully on {device}")
+            print(f"✅ BERT model loaded successfully on {device} with GPU optimizations")
     
     def __call__(self, tokens: List[str]) -> list:
         """
@@ -72,15 +80,33 @@ class BERTExtractor:
                 if tok:
                     tokenized_parts.append(tok)
         
-        # Flatten and add CLS/SEP tokens
+        # Flatten and add CLS token at start
         sequence_ids = [self.tokenizer.cls_token_id]
         for part in tokenized_parts:
             sequence_ids.extend(part)
-        sequence_ids.append(self.tokenizer.sep_token_id)
         
-        # Truncate if needed
-        if len(sequence_ids) > 512:
-            sequence_ids = sequence_ids[:511] + [self.tokenizer.sep_token_id]
+        # Check if we need to truncate
+        max_length = 510
+        if len(sequence_ids) - 1 > max_length:
+            # Find where the mask token is in the sequence_ids
+            mask_position_in_seq = 1  # Start after CLS
+            for i, part in enumerate(tokenized_parts):
+                if i == mask_position:
+                    break
+                mask_position_in_seq += len(part)
+            
+            # Keep tokens around the mask position
+            if mask_position_in_seq < max_length // 2:
+                sequence_ids = sequence_ids[:max_length + 1]
+            else:
+                tokens_before = max_length // 2
+                tokens_after = max_length - tokens_before
+                start_pos = max(1, mask_position_in_seq - tokens_before)
+                end_pos = min(len(sequence_ids), mask_position_in_seq + tokens_after)
+                sequence_ids = [self.tokenizer.cls_token_id] + sequence_ids[start_pos:end_pos]
+        
+        # Add SEP token at end
+        sequence_ids.append(self.tokenizer.sep_token_id)
         
         # Convert to tensor
         inputs = {
@@ -91,17 +117,14 @@ class BERTExtractor:
         # Move inputs to the same device as model
         inputs = {key: val.to(device) for key, val in inputs.items()}
         
-        # Get model outputs
-        with torch.no_grad():
+        # Get model outputs with mixed precision
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
             outputs = self.model(**inputs)
         
         # Extract hidden states from all layers
-        # hidden_states is a tuple of (num_layers + 1) tensors
-        # Each tensor has shape: (batch_size, sequence_length, hidden_size)
         hidden_states = outputs.hidden_states
         
-        # Find the actual position of [MASK] in the tokenized sequence
-        # This might differ from the original position due to subword tokenization
+        # Find the actual position of mask token in the tokenized sequence
         input_ids = inputs["input_ids"][0]
         mask_token_id = self.tokenizer.mask_token_id
         tokenized_mask_position = (input_ids == mask_token_id).nonzero(as_tuple=True)[0][0].item()
@@ -166,15 +189,41 @@ class BERTExtractor:
                     if tok:  # Only add if tokenization produced something
                         tokenized_parts.append(tok)
             
-            # Flatten and add CLS/SEP tokens
+            # Flatten and add CLS token at start
             sequence_ids = [self.tokenizer.cls_token_id]
             for part in tokenized_parts:
                 sequence_ids.extend(part)
-            sequence_ids.append(self.tokenizer.sep_token_id)
             
-            # Truncate if needed
-            if len(sequence_ids) > 512:
-                sequence_ids = sequence_ids[:511] + [self.tokenizer.sep_token_id]
+            # Check if we need to truncate (max length is 512 including CLS and SEP)
+            max_length = 510  # Leave room for CLS and SEP
+            if len(sequence_ids) - 1 > max_length:  # -1 because we already added CLS
+                # Find where the mask token is in the sequence_ids
+                mask_position_in_seq = None
+                current_pos = 1  # Start after CLS
+                for i, part in enumerate(tokenized_parts):
+                    if i == mask_idx:
+                        mask_position_in_seq = current_pos
+                        break
+                    current_pos += len(part)
+                
+                # If mask is in first half, keep first max_length tokens
+                # If mask is in second half, keep tokens around the mask
+                if mask_position_in_seq < max_length // 2:
+                    # Mask is early, keep beginning
+                    sequence_ids = sequence_ids[:max_length + 1]  # +1 for CLS
+                else:
+                    # Mask is late, keep tokens around mask position
+                    # Calculate how many tokens to keep before and after mask
+                    tokens_before = max_length // 2
+                    tokens_after = max_length - tokens_before
+                    start_pos = max(1, mask_position_in_seq - tokens_before)
+                    end_pos = min(len(sequence_ids), mask_position_in_seq + tokens_after)
+                    
+                    # Rebuild sequence with CLS, selected tokens, and ensure mask is included
+                    sequence_ids = [self.tokenizer.cls_token_id] + sequence_ids[start_pos:end_pos]
+            
+            # Add SEP token at end
+            sequence_ids.append(self.tokenizer.sep_token_id)
             
             all_input_ids.append(sequence_ids)
         
@@ -197,8 +246,8 @@ class BERTExtractor:
         # Move inputs to the same device as model
         inputs = {key: val.to(device) for key, val in inputs.items()}
         
-        # Get model outputs for the entire batch
-        with torch.no_grad():
+        # Get model outputs for the entire batch with mixed precision for speed
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
             outputs = self.model(**inputs)
         
         # Extract hidden states from all layers
@@ -206,8 +255,8 @@ class BERTExtractor:
         # Each tensor has shape: (batch_size, sequence_length, hidden_size)
         hidden_states = outputs.hidden_states
         
-        # Get the last 4 layers
-        last_four_layers = hidden_states[-4:]
+        # Get the last 4 layers and stack them efficiently
+        last_four_layers = torch.stack(hidden_states[-4:])  # Shape: (4, batch_size, seq_len, hidden_size)
         
         # Process each item in the batch
         batch_embeddings = []
@@ -230,19 +279,15 @@ class BERTExtractor:
             
             tokenized_mask_position = mask_positions[0].item()
             
-            # Extract embeddings for the [MASK] token from each of the last 4 layers
-            mask_embeddings = []
-            for layer in last_four_layers:
-                # layer shape: (batch_size, sequence_length, hidden_size)
-                mask_embedding = layer[batch_idx, tokenized_mask_position, :]  # Shape: (768,)
-                mask_embeddings.append(mask_embedding)
+            # Extract embeddings for the mask token from last 4 layers efficiently
+            # Shape: (4, hidden_size) - get mask position across all 4 layers at once
+            mask_embeddings = last_four_layers[:, batch_idx, tokenized_mask_position, :]
             
-            # Stack and compute average: h_t = 1/4 * Σ(ĥ_t)
-            stacked_embeddings = torch.stack(mask_embeddings)  # Shape: (4, 768)
-            averaged_embedding = torch.mean(stacked_embeddings, dim=0)  # Shape: (768,)
+            # Compute average: h_t = 1/4 * Σ(ĥ_t)
+            averaged_embedding = torch.mean(mask_embeddings, dim=0)  # Shape: (768,)
             
-            # Convert to list and add to batch results
-            batch_embeddings.append(averaged_embedding.cpu().numpy())
+            # Convert to numpy and add to batch results
+            batch_embeddings.append(averaged_embedding.cpu().float().numpy())
         
         # Apply IPCA projection to entire batch if available
         if self.ipca is not None:

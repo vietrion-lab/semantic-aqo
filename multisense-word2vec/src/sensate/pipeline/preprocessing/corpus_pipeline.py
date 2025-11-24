@@ -55,8 +55,9 @@ class BERTEmbeddingGenerator:
                 all_masked_sentences.append(masked_sentence)
                 sentence_token_map.append((sentence_idx, token))
         
-        # Process all masked sentences in batches using GPU
-        batch_size = 512
+        # Process all masked sentences in large batches using GPU
+        # With 22.5GB GPU, we can use much larger batches for faster processing
+        batch_size = 128  # Increase batch size for better GPU utilization
         all_embeddings = []
         
         for i in tqdm(range(0, len(all_masked_sentences), batch_size), desc="Generating BERT embeddings", unit="batch"):
