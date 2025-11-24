@@ -42,55 +42,59 @@ class BERTEmbeddingGenerator:
         Output:
             List[Dict[token, embedding_vector]]
         
-        Uses generator-based processing to minimize RAM usage while maximizing GPU utilization.
+        Optimized with deduplication: process each unique (sentence_pattern, token_position) only once.
         """
         # Initialize result structure
         embeddings_list = [{} for _ in corpus]
         
-        # Process in batches using generator to save RAM
-        batch_size = 512  # A100 can handle massive batches (40GB VRAM)
+        # Step 1: Deduplicate - find unique (sentence_pattern, position) pairs
+        print("🔍 Deduplicating sentences for faster processing...")
+        unique_masks = {}  # (sentence_tuple, position) -> list of (sentence_idx, token)
         
-        def generate_masked_batches():
-            """Generator that yields batches of (masked_sentence, sentence_idx, token) on-the-fly"""
-            batch = []
-            metadata = []
+        for sentence_idx, sentence in enumerate(corpus):
+            sentence_tuple = tuple(sentence)
+            for token_idx, token in enumerate(sentence):
+                key = (sentence_tuple, token_idx)
+                if key not in unique_masks:
+                    unique_masks[key] = []
+                unique_masks[key].append((sentence_idx, token))
+        
+        print(f"   ✓ Reduced from {sum(len(s) for s in corpus):,} to {len(unique_masks):,} unique masks ({100*(1-len(unique_masks)/sum(len(s) for s in corpus)):.1f}% reduction)")
+        
+        # Step 2: Process only unique masks in large batches
+        batch_size = 1024  # A100 can handle large batches
+        
+        unique_items = list(unique_masks.items())
+        total_batches = (len(unique_items) + batch_size - 1) // batch_size
+        
+        for batch_start in tqdm(range(0, len(unique_items), batch_size),
+                               total=total_batches,
+                               desc="Generating BERT embeddings",
+                               unit="batch"):
+            batch_end = min(batch_start + batch_size, len(unique_items))
+            batch_items = unique_items[batch_start:batch_end]
             
-            for sentence_idx, sentence in enumerate(corpus):
-                for token_idx, token in enumerate(sentence):
-                    # Create masked sentence on-the-fly
-                    masked_sentence = sentence.copy()
-                    masked_sentence[token_idx] = "<mask>"
-                    
-                    batch.append(masked_sentence)
-                    metadata.append((sentence_idx, token))
-                    
-                    # Yield when batch is full
-                    if len(batch) >= batch_size:
-                        yield batch, metadata
-                        batch = []
-                        metadata = []
+            # Prepare masked sentences for this batch
+            masked_sentences = []
+            batch_metadata = []
             
-            # Yield remaining items
-            if batch:
-                yield batch, metadata
-        
-        # Process batches
-        total_tokens = sum(len(sentence) for sentence in corpus)
-        total_batches = (total_tokens + batch_size - 1) // batch_size
-        
-        for batch, metadata in tqdm(generate_masked_batches(), 
-                                    total=total_batches,
-                                    desc="Generating BERT embeddings", 
-                                    unit="batch"):
+            for (sentence_tuple, token_idx), occurrences in batch_items:
+                sentence = list(sentence_tuple)
+                masked_sentence = sentence.copy()
+                masked_sentence[token_idx] = "<mask>"
+                masked_sentences.append(masked_sentence)
+                batch_metadata.append(occurrences)
+            
             # Get embeddings for this batch
-            batch_embeddings = self.extractor.batch_extract(batch)
+            batch_embeddings = self.extractor.batch_extract(masked_sentences)
             
-            # Immediately assign to result and discard to free RAM
-            for (sentence_idx, token), embedding in zip(metadata, batch_embeddings):
-                embeddings_list[sentence_idx][token] = embedding
+            # Assign embeddings to ALL occurrences
+            for embedding, occurrences in zip(batch_embeddings, batch_metadata):
+                for sentence_idx, token in occurrences:
+                    embeddings_list[sentence_idx][token] = embedding
             
-            # Explicitly delete to free memory
-            del batch_embeddings
+            # Free memory
+            del batch_embeddings, masked_sentences
         
         return embeddings_list
 

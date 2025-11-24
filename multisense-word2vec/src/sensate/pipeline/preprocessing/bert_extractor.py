@@ -1,7 +1,12 @@
 from typing import List
 import torch
 import numpy as np
+import warnings
 from transformers import RobertaTokenizer, RobertaModel
+
+# Suppress the UserWarning about TF32
+warnings.filterwarnings('ignore', message='.*TensorFloat-32.*')
+warnings.filterwarnings('ignore', message='.*torch.cuda.amp.autocast.*')
 
 from sensate.factory.common import device
 
@@ -34,6 +39,14 @@ class BERTExtractor:
         # Move model to GPU if available and optimize for inference
         self.model.to(device)
         self.model.eval()  # Set to evaluation mode
+        
+        # Compile model with torch.compile for A100 (PyTorch 2.0+)
+        # This can give 2-3x speedup
+        try:
+            self.model = torch.compile(self.model, mode='max-autotune')
+            print(f"✅ Model compiled with torch.compile for maximum speed")
+        except Exception as e:
+            print(f"⚠️  torch.compile not available, using eager mode: {e}")
         
         # Optimize for A100 GPU
         if torch.cuda.is_available():
@@ -279,12 +292,6 @@ class BERTExtractor:
             mask_positions = (input_ids[batch_idx] == mask_token_id).nonzero(as_tuple=True)[0]
             
             if len(mask_positions) == 0:
-                print(f"\nDEBUG - Sequence {batch_idx}:")
-                print(f"  Original tokens: {batch_tokens[batch_idx]}")
-                print(f"  Input IDs: {input_ids[batch_idx].tolist()}")
-                print(f"  Looking for mask_token_id: {mask_token_id}")
-                print(f"  Mask token string: {self.tokenizer.mask_token}")
-                print(f"  Decoded: {self.tokenizer.decode(input_ids[batch_idx])}")
                 raise ValueError(f"No mask token (ID={mask_token_id}) found in tokenized sequence {batch_idx}")
             
             mask_positions_list.append(mask_positions[0].item())
@@ -308,10 +315,6 @@ class BERTExtractor:
             result = [emb.tolist() for emb in batch_embeddings]
         else:
             result = [emb.tolist() for emb in batch_embeddings]
-        
-        # Clear GPU cache to free memory
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         
         return result
 
