@@ -214,12 +214,19 @@ class BERTExtractor:
         mask_token_id = self.tokenizer.mask_token_id
         
         for batch_idx in range(len(batch_tokens)):
-            # Find the position of [MASK] in this sequence
+            # Find the position of mask token in this sequence
             input_ids = inputs["input_ids"][batch_idx]
             mask_positions = (input_ids == mask_token_id).nonzero(as_tuple=True)[0]
             
             if len(mask_positions) == 0:
-                raise ValueError(f"No [MASK] token found in tokenized sequence {batch_idx}")
+                # Debug: print what we got
+                print(f"\nDEBUG - Sequence {batch_idx}:")
+                print(f"  Original tokens: {batch_tokens[batch_idx]}")
+                print(f"  Input IDs: {input_ids.tolist()}")
+                print(f"  Looking for mask_token_id: {mask_token_id}")
+                print(f"  Mask token string: {self.tokenizer.mask_token}")
+                print(f"  Decoded: {self.tokenizer.decode(input_ids)}")
+                raise ValueError(f"No mask token (ID={mask_token_id}) found in tokenized sequence {batch_idx}")
             
             tokenized_mask_position = mask_positions[0].item()
             
