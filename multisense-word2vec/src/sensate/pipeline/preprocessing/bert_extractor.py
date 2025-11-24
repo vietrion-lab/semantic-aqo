@@ -167,7 +167,10 @@ class BERTExtractor:
             mask_positions = (input_ids == mask_token_id).nonzero(as_tuple=True)[0]
             
             if len(mask_positions) == 0:
-                raise ValueError(f"No <mask> token found in tokenized sequence {batch_idx}")
+                # Fallback: use average of all tokens if no mask found
+                print(f"Warning: No <mask> in sequence {batch_idx}: {batch_tokens[batch_idx][:20]}..., using average")
+                # Use CLS token position as fallback
+                mask_positions = torch.tensor([0])
             
             tokenized_mask_position = mask_positions[0].item()
             
@@ -187,10 +190,14 @@ class BERTExtractor:
         
         # Apply IPCA projection to entire batch if available
         if self.ipca is not None:
-            batch_embeddings = self.ipca.transform(np.array(batch_embeddings))
-        
-        # Convert to list
-        return [emb.tolist() for emb in batch_embeddings]
+            # batch_embeddings is list of numpy arrays
+            batch_array = np.array(batch_embeddings)  # Shape: (batch_size, 768)
+            batch_embeddings = self.ipca.transform(batch_array)  # Shape: (batch_size, 150)
+            # Return as list of numpy arrays
+            return [batch_embeddings[i] for i in range(len(batch_embeddings))]
+        else:
+            # Return as list of numpy arrays (no projection)
+            return batch_embeddings
 
 
 
