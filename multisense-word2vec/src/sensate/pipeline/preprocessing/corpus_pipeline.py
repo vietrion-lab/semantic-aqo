@@ -62,7 +62,7 @@ class BERTEmbeddingGenerator:
         print(f"   ✓ Reduced from {sum(len(s) for s in corpus):,} to {len(unique_masks):,} unique masks ({100*(1-len(unique_masks)/sum(len(s) for s in corpus)):.1f}% reduction)")
         
         # Step 2: Process only unique masks in large batches
-        batch_size = 1024  # A100 can handle large batches
+        batch_size = 512  # A100 can handle large batches
         
         unique_items = list(unique_masks.items())
         total_batches = (len(unique_items) + batch_size - 1) // batch_size

@@ -2,11 +2,17 @@ from typing import List
 import torch
 import numpy as np
 import warnings
+import os
+import logging
 from transformers import RobertaTokenizer, RobertaModel
 
-# Suppress the UserWarning about TF32
+# Suppress the UserWarning about TF32 and autotune verbosity
 warnings.filterwarnings('ignore', message='.*TensorFloat-32.*')
 warnings.filterwarnings('ignore', message='.*torch.cuda.amp.autocast.*')
+
+# Suppress Triton autotune verbose output
+os.environ['TRITON_PRINT_AUTOTUNING'] = '0'
+logging.getLogger('torch._inductor').setLevel(logging.ERROR)
 
 from sensate.factory.common import device
 
