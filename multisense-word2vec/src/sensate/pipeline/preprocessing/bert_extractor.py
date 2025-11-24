@@ -43,10 +43,10 @@ class BERTExtractor:
     
     def __call__(self, tokens: List[str]) -> list:
         """
-        Extract BERT embeddings for the <mask> token by averaging last 4 layers.
+        Extract BERT embeddings for the [MASK] token by averaging last 4 layers.
         
         Args:
-            tokens: List of tokens (must contain exactly one <mask> token)
+            tokens: List of tokens (must contain exactly one [MASK] token)
             
         Returns:
             A 1D list of 768 float values representing the embedding
@@ -59,9 +59,13 @@ class BERTExtractor:
 
         # Find the position of <mask> token in the original tokens
         mask_position = tokens.index("<mask>")
+        
+        # Replace <mask> placeholder with tokenizer's actual mask token
+        tokens_copy = tokens.copy()
+        tokens_copy[mask_position] = self.tokenizer.mask_token
 
         # Convert tokens to text
-        text = " ".join(tokens)
+        text = " ".join(tokens_copy)
         
         # Tokenize input
         inputs = self.tokenizer(
@@ -84,7 +88,7 @@ class BERTExtractor:
         # Each tensor has shape: (batch_size, sequence_length, hidden_size)
         hidden_states = outputs.hidden_states
         
-        # Find the actual position of <mask> in the tokenized sequence
+        # Find the actual position of [MASK] in the tokenized sequence
         # This might differ from the original position due to subword tokenization
         input_ids = inputs["input_ids"][0]
         mask_token_id = self.tokenizer.mask_token_id
@@ -130,8 +134,17 @@ class BERTExtractor:
             if "<mask>" not in tokens:
                 raise ValueError("Each input must contain a <mask> token")
         
+        # Replace <mask> placeholder with tokenizer's actual mask token
+        # This ensures the tokenizer recognizes it as a special token
+        batch_tokens_with_mask = []
+        for tokens in batch_tokens:
+            tokens_copy = tokens.copy()
+            mask_idx = tokens_copy.index("<mask>")
+            tokens_copy[mask_idx] = self.tokenizer.mask_token  # e.g., "<mask>" for RoBERTa
+            batch_tokens_with_mask.append(tokens_copy)
+        
         # Convert all token sequences to text
-        texts = [" ".join(tokens) for tokens in batch_tokens]
+        texts = [" ".join(tokens) for tokens in batch_tokens_with_mask]
         
         # Tokenize all inputs in batch
         inputs = self.tokenizer(
@@ -162,16 +175,16 @@ class BERTExtractor:
         mask_token_id = self.tokenizer.mask_token_id
         
         for batch_idx in range(len(batch_tokens)):
-            # Find the position of <mask> in this sequence
+            # Find the position of [MASK] in this sequence
             input_ids = inputs["input_ids"][batch_idx]
             mask_positions = (input_ids == mask_token_id).nonzero(as_tuple=True)[0]
             
             if len(mask_positions) == 0:
-                raise ValueError(f"No <mask> token found in tokenized sequence {batch_idx}")
+                raise ValueError(f"No [MASK] token found in tokenized sequence {batch_idx}")
             
             tokenized_mask_position = mask_positions[0].item()
             
-            # Extract embeddings for the <mask> token from each of the last 4 layers
+            # Extract embeddings for the [MASK] token from each of the last 4 layers
             mask_embeddings = []
             for layer in last_four_layers:
                 # layer shape: (batch_size, sequence_length, hidden_size)
@@ -197,6 +210,6 @@ class BERTExtractor:
 # Usage
 # if __name__ == "__main__":
 #     extractor = BERTExtractor()
-#     embeddings = extractor(["SELECT", "<mask>", "FROM", "<TAB>", "WHERE", "<COL>", "=", "<STR>", ";"])
+#     embeddings = extractor(["SELECT", "[MASK]", "FROM", "<TAB>", "WHERE", "<COL>", "=", "<STR>", ";"])
 #     print(embeddings) # Must return a list with 768 elements
 #     print(len(embeddings)) # Should be 768

@@ -1,5 +1,6 @@
 import re
 from typing import List, Dict, Tuple, Optional
+from tqdm import tqdm
 
 
 class PreprocessingPipeline:
@@ -367,16 +368,18 @@ class PreprocessingPipeline:
         Returns:
             List of tokens for a single query, or list of token lists for a batch
         """
+        
+        processer = tqdm(query_or_batch, desc="Preprocessing SQL queries")
         if isinstance(query_or_batch, str):
             # Return list of tokens
             processed_string = self.tokenize(query_or_batch)
             return processed_string.split()
         elif isinstance(query_or_batch, (list, tuple)):
             # Return list of token lists
-            return [self.tokenize(query).split() for query in query_or_batch]
+            return [self.tokenize(query).split() for query in processer]
         else:
             # Handle other iterables (like HuggingFace dataset columns)
             try:
-                return [self.tokenize(str(query)).split() for query in query_or_batch]
+                return [self.tokenize(str(query)).split() for query in processer]
             except TypeError:
                 raise TypeError(f"Input must be a string or iterable of strings, got {type(query_or_batch)}")
