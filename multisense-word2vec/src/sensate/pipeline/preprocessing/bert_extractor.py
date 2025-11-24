@@ -40,21 +40,6 @@ class BERTExtractor:
             print(f"✅ BERT model loaded with IPCA projection (768 -> {self.ipca.n_components} dim)")
         else:
             print(f"✅ BERT model loaded successfully on {device}")
-        self.max_tokens = 510  # Reserve room for special tokens (CLS/SEP)
-    
-    def _truncate_around_mask(self, tokens: List[str]) -> List[str]:
-        """Ensure the <mask> token stays within the max token window."""
-        if len(tokens) <= self.max_tokens:
-            return tokens
-        if "<mask>" not in tokens:
-            raise ValueError("Input must contain a <mask> token before truncation")
-        mask_idx = tokens.index("<mask>")
-        half_window = self.max_tokens // 2
-        start = max(0, mask_idx - half_window)
-        end = min(len(tokens), start + self.max_tokens)
-        if end - start < self.max_tokens:
-            start = max(0, end - self.max_tokens)
-        return tokens[start:end]
     
     def __call__(self, tokens: List[str]) -> list:
         """
@@ -72,8 +57,8 @@ class BERTExtractor:
         if "<mask>" not in tokens:
             raise ValueError("Input must contain a <mask> token")
 
-        # Keep window around <mask> to avoid tokenizer truncation removing it
-        tokens = self._truncate_around_mask(tokens)
+        # Find the position of <mask> token in the original tokens
+        mask_position = tokens.index("<mask>")
 
         # Convert tokens to text
         text = " ".join(tokens)
@@ -121,13 +106,13 @@ class BERTExtractor:
         averaged_embedding = torch.mean(stacked_embeddings, dim=0)  # Shape: (768,)
         
         # Convert to numpy and apply IPCA if available
-        embedding_np = averaged_embedding.cpu().numpy().astype(np.float32)
+        embedding_np = averaged_embedding.cpu().numpy()
         
         if self.ipca is not None:
             embedding_np = self.ipca.transform(embedding_np.reshape(1, -1))[0]
         
-        # Return numpy array for efficiency
-        return embedding_np.astype(np.float32)
+        # Convert to list and return
+        return embedding_np.tolist()
     
     def batch_extract(self, batch_tokens: List[List[str]]) -> List[list]:
         """
@@ -140,15 +125,13 @@ class BERTExtractor:
         Returns:
             List of embeddings, each a 1D list of 768 float values
         """
-        # Validate inputs and keep window around <mask>
-        processed_tokens = []
+        # Validate inputs
         for tokens in batch_tokens:
             if "<mask>" not in tokens:
                 raise ValueError("Each input must contain a <mask> token")
-            processed_tokens.append(self._truncate_around_mask(tokens))
         
         # Convert all token sequences to text
-        texts = [" ".join(tokens) for tokens in processed_tokens]
+        texts = [" ".join(tokens) for tokens in batch_tokens]
         
         # Tokenize all inputs in batch
         inputs = self.tokenizer(
@@ -178,13 +161,16 @@ class BERTExtractor:
         batch_embeddings = []
         mask_token_id = self.tokenizer.mask_token_id
         
-        for batch_idx in range(len(processed_tokens)):
+        for batch_idx in range(len(batch_tokens)):
             # Find the position of <mask> in this sequence
             input_ids = inputs["input_ids"][batch_idx]
             mask_positions = (input_ids == mask_token_id).nonzero(as_tuple=True)[0]
             
             if len(mask_positions) == 0:
-                raise ValueError(f"Tokenizer dropped <mask> token in sequence {batch_idx}")
+                # Fallback: use average of all tokens if no mask found
+                print(f"Warning: No <mask> in sequence {batch_idx}: {batch_tokens[batch_idx][:20]}..., using average")
+                # Use CLS token position as fallback
+                mask_positions = torch.tensor([0])
             
             tokenized_mask_position = mask_positions[0].item()
             
@@ -200,14 +186,17 @@ class BERTExtractor:
             averaged_embedding = torch.mean(stacked_embeddings, dim=0)  # Shape: (768,)
             
             # Convert to list and add to batch results
-            batch_embeddings.append(averaged_embedding.cpu().numpy().astype(np.float32))
+            batch_embeddings.append(averaged_embedding.cpu().numpy())
         
         # Apply IPCA projection to entire batch if available
-        if self.ipca is not None and len(batch_embeddings) > 0:
-            batch_array = np.stack(batch_embeddings)
-            batch_embeddings = self.ipca.transform(batch_array).astype(np.float32)
+        if self.ipca is not None:
+            # batch_embeddings is list of numpy arrays
+            batch_array = np.array(batch_embeddings)  # Shape: (batch_size, 768)
+            batch_embeddings = self.ipca.transform(batch_array)  # Shape: (batch_size, 150)
+            # Return as list of numpy arrays
             return [batch_embeddings[i] for i in range(len(batch_embeddings))]
         else:
+            # Return as list of numpy arrays (no projection)
             return batch_embeddings
 
 

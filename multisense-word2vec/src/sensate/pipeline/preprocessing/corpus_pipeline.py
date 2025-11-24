@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 from tqdm import tqdm
 from sensate.pipeline.preprocessing.bert_extractor import BERTExtractor
 
@@ -7,61 +7,69 @@ class PairGenerator:
     def __init__(self, window_size: int = 2):
         self.window_size = window_size
 
-    def _get_context_indices(self, tokens: List[str], center_idx: int) -> List[int]:
-        """Return indices of context tokens within the configured window."""
+    def _get_contexts(self, tokens: List[str], center_idx: int) -> List[str]:
+        # Purpose: Extract left and right contexts within window size for a given center
         left_start = max(0, center_idx - self.window_size)
+        left_contexts = tokens[left_start:center_idx]
         right_end = min(len(tokens), center_idx + self.window_size + 1)
-        return list(range(left_start, center_idx)) + list(range(center_idx + 1, right_end))
+        right_contexts = tokens[center_idx + 1:right_end]
+        return left_contexts + right_contexts
  
-    def generate_center_context_pair(self, tokens: List[str]) -> List[tuple]:
-        """Generate (center_idx, context_idx) pairs for a sentence."""
+    def generate_center_context_pair(self, tokens: List[str]) -> List[List[str]]:
+        # Purpose: Generate pairs [center, context] for a single tokenized sentence
         pairs = []
         for i in range(len(tokens)):
-            for ctx_idx in self._get_context_indices(tokens, i):
-                pairs.append((i, ctx_idx))
+            center = tokens[i]
+            contexts = self._get_contexts(tokens, i)
+            for context in contexts:
+                pairs.append([center, context])
         return pairs
+
+    def __call__(self, corpus: list) -> list:
+        # Purpose: Process a corpus to generate pairs for all sentences
+        return [self.generate_center_context_pair(sentence) for sentence in tqdm(corpus, desc="Generating training samples", unit="sentence")]
 
 
 class BERTEmbeddingGenerator:
-    def __init__(self, foundation_model_name: str = None, ipca=None, sentences_per_chunk: int = 32, mask_batch_size: int = 128):
+    def __init__(self, foundation_model_name: str = None, ipca=None):
         self.extractor = BERTExtractor(model_name=foundation_model_name, ipca=ipca)
-        self.sentences_per_chunk = sentences_per_chunk
-        self.mask_batch_size = mask_batch_size
 
-    def iter_embeddings(self, corpus: List[List[str]], sentences_per_chunk: int = None):
-        """Yield embeddings per sentence in small chunks to control memory."""
-        if sentences_per_chunk is None:
-            sentences_per_chunk = self.sentences_per_chunk
-        total = len(corpus)
-        for start in tqdm(range(0, total, sentences_per_chunk), desc="Generating BERT embeddings", unit="sentence"):
-            chunk = corpus[start:start + sentences_per_chunk]
-            if not chunk:
-                continue
-            masked_sentences = []
-            sentence_token_map = []
-            for local_idx, sentence in enumerate(chunk):
-                for token_idx in range(len(sentence)):
-                    masked_sentence = sentence.copy()
-                    masked_sentence[token_idx] = "<mask>"
-                    masked_sentences.append(masked_sentence)
-                    sentence_token_map.append((local_idx, token_idx))
-            if not masked_sentences:
-                for _ in chunk:
-                    yield []
-                continue
-            batch_embeddings = []
-            for i in range(0, len(masked_sentences), self.mask_batch_size):
-                batch = masked_sentences[i:i + self.mask_batch_size]
-                batch_embeddings.extend(self.extractor.batch_extract(batch))
-            sentence_embeddings = [[None] * len(sentence) for sentence in chunk]
-            for (local_idx, token_idx), embedding in zip(sentence_token_map, batch_embeddings):
-                sentence_embeddings[local_idx][token_idx] = embedding
-            for embeddings in sentence_embeddings:
-                yield embeddings
-
-    def process_sentence(self, sentence: List[str]) -> List:
-        """Convenience method to process a single sentence."""
-        return next(self.iter_embeddings([sentence], sentences_per_chunk=1))
+    def __call__(self, corpus: List[List[str]]) -> List[Dict[str, list]]:
+        """
+        For each sentence in corpus:
+            - Mask each token one by one.
+            - Use BERTExtractor to extract embedding for the masked token.
+        Output:
+            List[Dict[token, embedding_vector]]
+        
+        Uses GPU batch processing for efficiency.
+        """
+        # Collect all masked sentences
+        all_masked_sentences = []
+        sentence_token_map = []  # Track which sentence and token each masked sentence belongs to
+        
+        for sentence_idx, sentence in enumerate(corpus):
+            for token_idx, token in enumerate(sentence):
+                masked_sentence = sentence.copy()
+                masked_sentence[token_idx] = "<mask>"  # Use token_idx instead of sentence.index(token)
+                all_masked_sentences.append(masked_sentence)
+                sentence_token_map.append((sentence_idx, token))
+        
+        # Process all masked sentences in batches using GPU
+        batch_size = 32
+        all_embeddings = []
+        
+        for i in tqdm(range(0, len(all_masked_sentences), batch_size), desc="Generating BERT embeddings", unit="batch"):
+            batch = all_masked_sentences[i:i + batch_size]
+            batch_embeddings = self.extractor.batch_extract(batch)
+            all_embeddings.extend(batch_embeddings)
+        
+        # Organize embeddings by sentence
+        embeddings_list = [{} for _ in corpus]
+        for (sentence_idx, token), embedding in zip(sentence_token_map, all_embeddings):
+            embeddings_list[sentence_idx][token] = embedding
+        
+        return embeddings_list
 
 # Test code with multiple sample data
 # if __name__ == "__main__":
