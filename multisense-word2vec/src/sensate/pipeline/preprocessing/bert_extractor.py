@@ -60,21 +60,33 @@ class BERTExtractor:
         # Find the position of <mask> token in the original tokens
         mask_position = tokens.index("<mask>")
         
-        # Replace <mask> placeholder with tokenizer's actual mask token
-        tokens_copy = tokens.copy()
-        tokens_copy[mask_position] = self.tokenizer.mask_token
-
-        # Convert tokens to text
-        text = " ".join(tokens_copy)
+        # Tokenize each token separately and combine
+        tokenized_parts = []
+        for i, token in enumerate(tokens):
+            if i == mask_position:
+                # Use the mask token ID directly
+                tokenized_parts.append([self.tokenizer.mask_token_id])
+            else:
+                # Tokenize normally, remove special tokens
+                tok = self.tokenizer.encode(token, add_special_tokens=False)
+                if tok:
+                    tokenized_parts.append(tok)
         
-        # Tokenize input
-        inputs = self.tokenizer(
-            text,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512
-        )
+        # Flatten and add CLS/SEP tokens
+        sequence_ids = [self.tokenizer.cls_token_id]
+        for part in tokenized_parts:
+            sequence_ids.extend(part)
+        sequence_ids.append(self.tokenizer.sep_token_id)
+        
+        # Truncate if needed
+        if len(sequence_ids) > 512:
+            sequence_ids = sequence_ids[:511] + [self.tokenizer.sep_token_id]
+        
+        # Convert to tensor
+        inputs = {
+            "input_ids": torch.tensor([sequence_ids]),
+            "attention_mask": torch.tensor([[1] * len(sequence_ids)])
+        }
         
         # Move inputs to the same device as model
         inputs = {key: val.to(device) for key, val in inputs.items()}
@@ -134,26 +146,53 @@ class BERTExtractor:
             if "<mask>" not in tokens:
                 raise ValueError("Each input must contain a <mask> token")
         
-        # Replace <mask> placeholder with tokenizer's actual mask token
-        # This ensures the tokenizer recognizes it as a special token
-        batch_tokens_with_mask = []
+        # Process each sequence: tokenize each token individually, then combine
+        all_input_ids = []
+        all_attention_masks = []
+        
         for tokens in batch_tokens:
-            tokens_copy = tokens.copy()
-            mask_idx = tokens_copy.index("<mask>")
-            tokens_copy[mask_idx] = self.tokenizer.mask_token  # e.g., "<mask>" for RoBERTa
-            batch_tokens_with_mask.append(tokens_copy)
+            # Find mask position
+            mask_idx = tokens.index("<mask>")
+            
+            # Tokenize each token separately
+            tokenized_parts = []
+            for i, token in enumerate(tokens):
+                if i == mask_idx:
+                    # Use the mask token ID directly
+                    tokenized_parts.append([self.tokenizer.mask_token_id])
+                else:
+                    # Tokenize normally, remove special tokens (CLS, SEP)
+                    tok = self.tokenizer.encode(token, add_special_tokens=False)
+                    if tok:  # Only add if tokenization produced something
+                        tokenized_parts.append(tok)
+            
+            # Flatten and add CLS/SEP tokens
+            sequence_ids = [self.tokenizer.cls_token_id]
+            for part in tokenized_parts:
+                sequence_ids.extend(part)
+            sequence_ids.append(self.tokenizer.sep_token_id)
+            
+            # Truncate if needed
+            if len(sequence_ids) > 512:
+                sequence_ids = sequence_ids[:511] + [self.tokenizer.sep_token_id]
+            
+            all_input_ids.append(sequence_ids)
         
-        # Convert all token sequences to text
-        texts = [" ".join(tokens) for tokens in batch_tokens_with_mask]
+        # Pad sequences to the same length
+        max_len = max(len(seq) for seq in all_input_ids)
+        padded_input_ids = []
+        attention_masks = []
         
-        # Tokenize all inputs in batch
-        inputs = self.tokenizer(
-            texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512
-        )
+        for seq in all_input_ids:
+            padding_length = max_len - len(seq)
+            padded_input_ids.append(seq + [self.tokenizer.pad_token_id] * padding_length)
+            attention_masks.append([1] * len(seq) + [0] * padding_length)
+        
+        # Convert to tensors
+        inputs = {
+            "input_ids": torch.tensor(padded_input_ids),
+            "attention_mask": torch.tensor(attention_masks)
+        }
         
         # Move inputs to the same device as model
         inputs = {key: val.to(device) for key, val in inputs.items()}
