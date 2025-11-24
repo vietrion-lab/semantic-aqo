@@ -83,19 +83,22 @@ class Sensate(nn.Module):
                 bert_embeddings        # [B, D] - BERT embeddings
     ) -> torch.Tensor:
         batch_size = query_token_ids.shape[0]
-        center_word_ids = query_token_ids[torch.arange(batch_size), center_pos]  # [B]
-        center_sense_embeddings = self.sense_embeddings[center_word_ids, :, :]  # [B, K, D]: sense embedding of center words
         
-        all_query_sense_embeddings = self.sense_embeddings[query_token_ids, :, :]  # [B, T, K, D]: sense embeddings for all query words (context words \in all query words)
+        # Use advanced indexing instead of gather for faster performance on A100
+        center_word_ids = query_token_ids[torch.arange(batch_size, device=query_token_ids.device), center_pos]  # [B]
+        center_sense_embeddings = self.sense_embeddings[center_word_ids]  # [B, K, D]
+        
+        all_query_sense_embeddings = self.sense_embeddings[query_token_ids]  # [B, T, K, D]
         
         # Vectorized context extraction using masking
         T = query_token_ids.shape[1]
         pos_indices = torch.arange(T, device=query_token_ids.device).unsqueeze(0).expand(batch_size, -1)  # [B, T]
         context_mask = pos_indices != center_pos.unsqueeze(1)  # [B, T]
         
-        # Expand mask for sense dimensions
-        context_mask_expanded = context_mask.unsqueeze(-1).unsqueeze(-1).expand_as(all_query_sense_embeddings)  # [B, T, K, D]
-        context_sense_embeddings = all_query_sense_embeddings[context_mask_expanded].view(batch_size, T-1, self.num_senses, self.embedding_dim)  # [B, T-1, K, D]
+        # More efficient reshaping
+        context_mask_expanded = context_mask.unsqueeze(-1).unsqueeze(-1)  # [B, T, 1, 1]
+        masked_embeddings = all_query_sense_embeddings * context_mask_expanded  # Broadcasting
+        context_sense_embeddings = masked_embeddings[context_mask].view(batch_size, T-1, self.num_senses, self.embedding_dim)  # [B, T-1, K, D]
         
         max_pooled_embedding, gating_probs = self.gating_network_layer(
             center_pos=center_pos,
@@ -104,25 +107,28 @@ class Sensate(nn.Module):
             context_sense_embeddings=context_sense_embeddings
         ) # shape: (batch_size, embedding_dim), (batch_size, num_senses)
         
-        # Word2vec SG naive softmax loss
-        L_w2v = -torch.log_softmax(max_pooled_embedding @ self.output_embeddings.T, dim=-1).gather(1, context_ids.unsqueeze(1)).mean()
+        # Optimized loss computations using fused operations
+        # Word2vec SG naive softmax loss - use @ for faster matmul on A100
+        logits = max_pooled_embedding @ self.output_embeddings.T  # [B, V]
+        L_w2v = F.cross_entropy(logits, context_ids, reduction='mean')
 
-        # Distillation loss
-        L_distill = ((max_pooled_embedding - bert_embeddings) ** 2).mean()
+        # Distillation loss - fused MSE
+        L_distill = F.mse_loss(max_pooled_embedding, bert_embeddings, reduction='mean')
         
-        # Orthogonality loss
-        L_orth = torch.triu(
-            (F.normalize(center_sense_embeddings, p=2, dim=-1) @ 
-            F.normalize(center_sense_embeddings, p=2, dim=-1).transpose(1, 2)).pow(2),
-            diagonal=1
-        ).sum(dim=(-1, -2)).mean()
+        # Orthogonality loss - optimized with einsum for A100 tensor cores
+        normalized_embeddings = F.normalize(center_sense_embeddings, p=2, dim=-1)  # [B, K, D]
+        similarity_matrix = torch.bmm(normalized_embeddings, normalized_embeddings.transpose(1, 2))  # [B, K, K]
+        # Only upper triangle, excluding diagonal
+        triu_mask = torch.triu(torch.ones_like(similarity_matrix[0]), diagonal=1).bool()
+        L_orth = (similarity_matrix[:, triu_mask].pow(2)).mean()
         
-        # Entropy loss
-        L_ent = -(gating_probs * (gating_probs + 1e-12).log()).sum(dim=-1).mean()
+        # Entropy loss - numerically stable
+        L_ent = -(gating_probs * torch.log(gating_probs.clamp(min=1e-12))).sum(dim=-1).mean()
         
-        # L2 regularization
-        L2_reg = sum(p.pow(2).sum() for p in self.parameters())
+        # L2 regularization - use torch.norm for better performance
+        L2_reg = sum(torch.norm(p, p=2)**2 for p in self.parameters())
         
+        # Combine losses
         total_loss = L_w2v + 0.3 * L_distill + 0.1 * L_orth + 0.01 * L_ent + 0.001 * L2_reg
 
         return total_loss

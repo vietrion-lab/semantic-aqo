@@ -48,7 +48,7 @@ class BERTEmbeddingGenerator:
         embeddings_list = [{} for _ in corpus]
         
         # Process in batches using generator to save RAM
-        batch_size = 256  # Larger batches for better GPU utilization
+        batch_size = 512  # A100 can handle massive batches (40GB VRAM)
         
         def generate_masked_batches():
             """Generator that yields batches of (masked_sentence, sentence_idx, token) on-the-fly"""

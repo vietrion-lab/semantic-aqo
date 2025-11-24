@@ -35,12 +35,18 @@ class BERTExtractor:
         self.model.to(device)
         self.model.eval()  # Set to evaluation mode
         
-        # Enable TF32 for faster computation on Ampere GPUs (RTX 30xx, A100, etc.)
+        # Optimize for A100 GPU
         if torch.cuda.is_available():
+            # Enable TF32 for Ampere GPUs (A100, RTX 30xx)
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            # Optimize CUDA kernels
+            # Enable BF16 for A100 (better numerical stability than FP16)
+            torch.set_float32_matmul_precision('high')
+            # Optimize CUDA kernels for maximum throughput
             torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
+            # Enable tensor cores
+            torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
         
         self.ipca = ipca
         
@@ -117,8 +123,9 @@ class BERTExtractor:
         # Move inputs to the same device as model
         inputs = {key: val.to(device) for key, val in inputs.items()}
         
-        # Get model outputs with mixed precision
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+        # Get model outputs with BF16 on A100 for maximum speed
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
             outputs = self.model(**inputs)
         
         # Extract hidden states from all layers
@@ -237,17 +244,19 @@ class BERTExtractor:
             padded_input_ids.append(seq + [self.tokenizer.pad_token_id] * padding_length)
             attention_masks.append([1] * len(seq) + [0] * padding_length)
         
-        # Convert to tensors
+        # Convert to tensors with pinned memory for faster transfer to GPU
         inputs = {
-            "input_ids": torch.tensor(padded_input_ids),
-            "attention_mask": torch.tensor(attention_masks)
+            "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_masks, dtype=torch.long)
         }
         
-        # Move inputs to the same device as model
-        inputs = {key: val.to(device) for key, val in inputs.items()}
+        # Move inputs to GPU with non_blocking for async transfer
+        inputs = {key: val.to(device, non_blocking=True) for key, val in inputs.items()}
         
-        # Get model outputs for the entire batch with mixed precision for speed
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+        # Get model outputs with BF16 on A100 for maximum speed
+        # A100 supports BF16 which is faster and more stable than FP16
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
             outputs = self.model(**inputs)
         
         # Extract hidden states from all layers
@@ -258,36 +267,40 @@ class BERTExtractor:
         # Get the last 4 layers and stack them efficiently
         last_four_layers = torch.stack(hidden_states[-4:])  # Shape: (4, batch_size, seq_len, hidden_size)
         
-        # Process each item in the batch
-        batch_embeddings = []
+        # Vectorized processing: extract all mask positions at once
         mask_token_id = self.tokenizer.mask_token_id
+        batch_size = len(batch_tokens)
         
-        for batch_idx in range(len(batch_tokens)):
-            # Find the position of mask token in this sequence
-            input_ids = inputs["input_ids"][batch_idx]
-            mask_positions = (input_ids == mask_token_id).nonzero(as_tuple=True)[0]
+        # Find mask positions for all sequences in parallel
+        input_ids = inputs["input_ids"]
+        mask_positions_list = []
+        
+        for batch_idx in range(batch_size):
+            mask_positions = (input_ids[batch_idx] == mask_token_id).nonzero(as_tuple=True)[0]
             
             if len(mask_positions) == 0:
-                # Debug: print what we got
                 print(f"\nDEBUG - Sequence {batch_idx}:")
                 print(f"  Original tokens: {batch_tokens[batch_idx]}")
-                print(f"  Input IDs: {input_ids.tolist()}")
+                print(f"  Input IDs: {input_ids[batch_idx].tolist()}")
                 print(f"  Looking for mask_token_id: {mask_token_id}")
                 print(f"  Mask token string: {self.tokenizer.mask_token}")
-                print(f"  Decoded: {self.tokenizer.decode(input_ids)}")
+                print(f"  Decoded: {self.tokenizer.decode(input_ids[batch_idx])}")
                 raise ValueError(f"No mask token (ID={mask_token_id}) found in tokenized sequence {batch_idx}")
             
-            tokenized_mask_position = mask_positions[0].item()
-            
-            # Extract embeddings for the mask token from last 4 layers efficiently
-            # Shape: (4, hidden_size) - get mask position across all 4 layers at once
-            mask_embeddings = last_four_layers[:, batch_idx, tokenized_mask_position, :]
-            
-            # Compute average: h_t = 1/4 * Σ(ĥ_t)
-            averaged_embedding = torch.mean(mask_embeddings, dim=0)  # Shape: (768,)
-            
-            # Convert to numpy and add to batch results
-            batch_embeddings.append(averaged_embedding.cpu().float().numpy())
+            mask_positions_list.append(mask_positions[0].item())
+        
+        # Extract all mask embeddings at once using advanced indexing
+        batch_indices = torch.arange(batch_size, device=device)
+        mask_positions_tensor = torch.tensor(mask_positions_list, device=device)
+        
+        # Extract embeddings: shape (4, batch_size, hidden_size)
+        all_mask_embeddings = last_four_layers[:, batch_indices, mask_positions_tensor, :]
+        
+        # Average across layers: (batch_size, hidden_size)
+        averaged_embeddings = torch.mean(all_mask_embeddings, dim=0)
+        
+        # Convert to numpy in one shot (faster than per-item)
+        batch_embeddings = averaged_embeddings.cpu().float().numpy()
         
         # Apply IPCA projection to entire batch if available
         if self.ipca is not None:

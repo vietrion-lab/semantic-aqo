@@ -265,7 +265,7 @@ class Trainer:
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
         
-        acce = Accelerator()
+        acce = Accelerator(mixed_precision='bf16')  # BF16 for A100 GPU
         self.model = Sensate(
             base_table=self.base_table,
             vocab_table=self.vocab_table,
@@ -283,13 +283,20 @@ class Trainer:
         )
         dataloader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=self.config.training.batch_size,
+            batch_size=self.config.training.batch_size * 4,  # 4x larger for A100
             shuffle=True,
-            num_workers=0,  # Use 0 for precomputed tensors (faster)
+            num_workers=4,  # Parallel data loading
             pin_memory=True,  # Faster GPU transfer
+            prefetch_factor=4,  # Prefetch 4 batches ahead
+            persistent_workers=True,  # Keep workers alive between epochs
             collate_fn=collate_fn
         )
-        opt = torch.optim.AdamW(self.model.parameters(), lr=self.config.training.learning_rate)
+        # Use fused AdamW for A100 (up to 2x faster)
+        opt = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.training.learning_rate * 2,  # Scale LR with batch size
+            fused=torch.cuda.is_available()  # Fused kernels for speed
+        )
 
         self.model, optimizer, dataloader = acce.prepare(self.model, opt, dataloader)
         
@@ -304,7 +311,7 @@ class Trainer:
             # Training phase
             self.model.train()
             for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", leave=False, unit="batch"):
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)  # Faster than zero_grad()
                 loss = self.model(
                     center_pos=batch['center_pos'],
                     context_ids=batch['context_ids'],
@@ -312,6 +319,8 @@ class Trainer:
                     bert_embeddings=batch['bert_embeddings']
                 )
                 acce.backward(loss)
+                # Gradient clipping for stability
+                acce.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
                 
                 epoch_loss += loss.item()
