@@ -1,5 +1,9 @@
+import os
 from sensate.pipeline import Trainer
 from utils import load_data, load_config
+
+# Disable Accelerate's automatic notebook launcher (prevents subprocess issues in Colab)
+os.environ['ACCELERATE_DISABLE_RICH'] = '1'
 
 if __name__ == "__main__":
     print("🚀 Starting MultiSense Word2Vec training...")

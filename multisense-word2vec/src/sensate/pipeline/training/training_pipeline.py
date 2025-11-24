@@ -265,7 +265,12 @@ class Trainer:
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
         
-        acce = Accelerator(mixed_precision='bf16')  # BF16 for A100 GPU
+        # Use Accelerator for single GPU (no distributed training)
+        acce = Accelerator(
+            mixed_precision='bf16',  # BF16 for A100 GPU
+            cpu=False,  # Force GPU usage
+            split_batches=False
+        )
         self.model = Sensate(
             base_table=self.base_table,
             vocab_table=self.vocab_table,
