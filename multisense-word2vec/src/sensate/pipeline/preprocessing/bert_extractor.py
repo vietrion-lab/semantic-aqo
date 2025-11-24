@@ -292,9 +292,15 @@ class BERTExtractor:
         # Apply IPCA projection to entire batch if available
         if self.ipca is not None:
             batch_embeddings = self.ipca.transform(np.array(batch_embeddings))
+            result = [emb.tolist() for emb in batch_embeddings]
+        else:
+            result = [emb.tolist() for emb in batch_embeddings]
         
-        # Convert to list
-        return [emb.tolist() for emb in batch_embeddings]
+        # Clear GPU cache to free memory
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return result
 
 
 
