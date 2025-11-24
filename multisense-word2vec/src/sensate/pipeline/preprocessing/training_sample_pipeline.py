@@ -1,9 +1,8 @@
 import pandas as pd
-from typing import List, Dict
+import numpy as np
+from array import array
+from typing import List
 from sensate.pipeline.preprocessing.corpus_pipeline import PairGenerator, BERTEmbeddingGenerator
-from sensate.schema.config_schema import BaseTableEntry
-
-import torch
 
 class TrainingSampleGenerator:
     def __init__(self, window_size: int = 2, foundation_model_name: str = None, ipca=None):
@@ -22,63 +21,71 @@ class TrainingSampleGenerator:
         - embedding_table: DataFrame with columns [id, embedding]
         - base_table: DataFrame with columns [id, center_word_id, center_pos, context_word_id, embedding_id, sql_query_id]
         """
-        # Step 1: Generate pairs (center-context) and contextual BERT embeddings
-            
-        pairs = self.pair_generator(corpus)
-        embeddings = self.embedding_generator(corpus)  # [{token: np.array(768)}, ...]
+        vocab_dict = {}
+        vocab_records = []  # (word, id)
+        query_records = []  # (id, sql_query, sql_length)
+        embedding_rows = []  # (embedding_id, embedding_vector)
 
-        vocab_dict, query_dict, embedding_dict, base_list = {}, {}, {}, []
-        embedding_id_map = {}  # (token, query_id) -> embedding_id
-        token_position_map = {}  # (token, query_id) -> position in query
+        # Base table columns stored as compact arrays to minimize RAM
+        center_word_ids = array('I')
+        center_positions = array('I')
+        context_word_ids = array('I')
+        embedding_ids = array('I')
+        query_ids = array('I')
 
-        # Step 2: Build vocabulary
-        unique_words = set(word for sentence in corpus for word in sentence)
-        for word in unique_words:
-            vocab_dict[word] = self.word_id_counter
-            self.word_id_counter += 1
+        embedding_iter = self.embedding_generator.iter_embeddings(corpus)
 
-        # Step 3: Build query table
-        query_list = []
-        for i, sentence in enumerate(corpus):
-            query_list.append({
-                'id': i,
-                'sql_query': " ".join(sentence),
-                'sql_length': len(sentence)
-            })
-            self.query_id_counter += 1
-            # Track position of each token in the query
-            for pos, token in enumerate(sentence):
-                token_position_map[(token, i)] = pos
+        for query_id, sentence_embeddings in enumerate(embedding_iter):
+            sentence = corpus[query_id]
+            query_records.append((query_id, " ".join(sentence), len(sentence)))
 
-        # Step 4: Build embedding table (unique per token per query)
-        for query_id, emb_dict in enumerate(embeddings):
-            for token, emb in emb_dict.items():
-                embedding_dict[self.embedding_id_counter] = emb
-                embedding_id_map[(token, query_id)] = self.embedding_id_counter
+            token_vocab_ids = []
+            token_embedding_ids = []
+
+            if len(sentence) != len(sentence_embeddings):
+                raise ValueError(f"Embedding/token length mismatch at query {query_id}")
+
+            for token_idx, (token, embedding) in enumerate(zip(sentence, sentence_embeddings)):
+                if token not in vocab_dict:
+                    token_id = self.word_id_counter
+                    vocab_dict[token] = token_id
+                    vocab_records.append((token, token_id))
+                    self.word_id_counter += 1
+                else:
+                    token_id = vocab_dict[token]
+
+                token_vocab_ids.append(token_id)
+                embedding_rows.append((self.embedding_id_counter, embedding))
+                token_embedding_ids.append(self.embedding_id_counter)
                 self.embedding_id_counter += 1
 
-        # Step 5: Build base table using IDs only
-        for query_id, sentence_pairs in enumerate(pairs):
-            for center, context in sentence_pairs:
-                if (center, query_id) not in embedding_id_map:
-                    continue
+            sentence_pairs = self.pair_generator.generate_center_context_pair(sentence)
+            for center_idx, context_idx in sentence_pairs:
+                center_word_ids.append(token_vocab_ids[center_idx])
+                center_positions.append(center_idx)
+                context_word_ids.append(token_vocab_ids[context_idx])
+                embedding_ids.append(token_embedding_ids[center_idx])
+                query_ids.append(query_id)
 
-                base_entry = {
-                    'id': self.next_id,
-                    'center_word_id': vocab_dict[center],
-                    'center_pos': token_position_map[(center, query_id)],
-                    'context_word_id': vocab_dict[context],
-                    'embedding_id': embedding_id_map[(center, query_id)],
-                    'sql_query_id': query_id
-                }
-                base_list.append(base_entry)
-                self.next_id += 1
+        vocab_table = pd.DataFrame(vocab_records, columns=['word', 'id']).sort_values('id').reset_index(drop=True)
+        query_table = pd.DataFrame(query_records, columns=['id', 'sql_query', 'sql_length']).sort_values('id').reset_index(drop=True)
+        embedding_table = pd.DataFrame(embedding_rows, columns=['id', 'embedding'])
 
-        # Convert to pandas DataFrames
-        vocab_table = pd.DataFrame(list(vocab_dict.items()), columns=['word', 'id'])
-        query_table = pd.DataFrame(query_list)
-        embedding_table = pd.DataFrame(list(embedding_dict.items()), columns=['id', 'embedding'])
-        base_table = pd.DataFrame(base_list)
+        # Convert base arrays to numpy int32 for pandas compatibility
+        center_word_ids_np = np.frombuffer(center_word_ids, dtype=np.uint32).astype(np.int32)
+        center_positions_np = np.frombuffer(center_positions, dtype=np.uint32).astype(np.int32)
+        context_word_ids_np = np.frombuffer(context_word_ids, dtype=np.uint32).astype(np.int32)
+        embedding_ids_np = np.frombuffer(embedding_ids, dtype=np.uint32).astype(np.int32)
+        query_ids_np = np.frombuffer(query_ids, dtype=np.uint32).astype(np.int32)
+
+        base_table = pd.DataFrame({
+            'id': np.arange(len(center_word_ids_np), dtype=np.int32),
+            'center_word_id': center_word_ids_np,
+            'center_pos': center_positions_np,
+            'context_word_id': context_word_ids_np,
+            'embedding_id': embedding_ids_np,
+            'sql_query_id': query_ids_np
+        })
 
         return vocab_table, query_table, embedding_table, base_table
 
