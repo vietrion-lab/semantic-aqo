@@ -49,9 +49,9 @@ class BERTEmbeddingGenerator:
         sentence_token_map = []  # Track which sentence and token each masked sentence belongs to
         
         for sentence_idx, sentence in enumerate(corpus):
-            for token_idx, token in enumerate(sentence):
+            for token in sentence:
                 masked_sentence = sentence.copy()
-                masked_sentence[token_idx] = "<mask>"  # Use token_idx instead of sentence.index(token)
+                masked_sentence[sentence.index(token)] = "<mask>"
                 all_masked_sentences.append(masked_sentence)
                 sentence_token_map.append((sentence_idx, token))
         
