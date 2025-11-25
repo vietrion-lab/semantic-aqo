@@ -2,6 +2,8 @@ import pandas as pd
 from typing import List, Dict
 from sensate.pipeline.preprocessing.corpus_pipeline import PairGenerator, BERTEmbeddingGenerator
 from sensate.schema.config_schema import BaseTableEntry
+from tqdm import tqdm
+import numpy as np
 
 import torch
 
@@ -27,19 +29,28 @@ class TrainingSampleGenerator:
         pairs = self.pair_generator(corpus)
         embeddings = self.embedding_generator(corpus)  # [{token: np.array(768)}, ...]
 
-        vocab_dict, query_dict, embedding_dict, base_list = {}, {}, {}, []
+        # Free up BERT model memory immediately
+        del self.embedding_generator
+        torch.cuda.empty_cache()
+
+        vocab_dict, query_dict = {}, {}
+        embedding_list = []  # Use list instead of dict for memory efficiency
         embedding_id_map = {}  # (token, query_id) -> embedding_id
         token_position_map = {}  # (token, query_id) -> position in query
+        base_list = []
 
         # Step 2: Build vocabulary
+        print("📚 Building vocabulary...")
         unique_words = set(word for sentence in corpus for word in sentence)
-        for word in unique_words:
+        for word in tqdm(unique_words, desc="Step 2: Building vocab", unit="word"):
             vocab_dict[word] = self.word_id_counter
             self.word_id_counter += 1
 
         # Step 3: Build query table
+        print("📝 Building query table...")
         query_list = []
-        for i, sentence in enumerate(corpus):
+        for i in tqdm(range(len(corpus)), desc="Step 3: Building queries", unit="query"):
+            sentence = corpus[i]
             query_list.append({
                 'id': i,
                 'sql_query': " ".join(sentence),
@@ -50,15 +61,30 @@ class TrainingSampleGenerator:
             for pos, token in enumerate(sentence):
                 token_position_map[(token, i)] = pos
 
-        # Step 4: Build embedding table (unique per token per query)
-        for query_id, emb_dict in enumerate(embeddings):
+        # Step 4: Build embedding table (unique per token per query) - memory efficient
+        print("🔢 Building embedding table...")
+        for query_id in tqdm(range(len(embeddings)), desc="Step 4: Building embeddings", unit="query"):
+            emb_dict = embeddings[query_id]
             for token, emb in emb_dict.items():
-                embedding_dict[self.embedding_id_counter] = emb
+                # Append to list instead of dict (more memory efficient)
+                embedding_list.append(emb)
                 embedding_id_map[(token, query_id)] = self.embedding_id_counter
                 self.embedding_id_counter += 1
+            
+            # Free memory as we go
+            embeddings[query_id] = None
+        
+        # Clear embeddings completely
+        del embeddings
+        
+        # Convert embedding list to numpy array for efficiency
+        embedding_array = np.array(embedding_list, dtype=np.float32)
+        del embedding_list  # Free the list
+        print(f"   ✓ Embedding array shape: {embedding_array.shape}, size: {embedding_array.nbytes / 1024 / 1024:.1f} MB")
 
         # Step 5: Build base table using IDs only
-        for query_id, sentence_pairs in enumerate(pairs):
+        print("🏗️  Building base table...")
+        for query_id, sentence_pairs in tqdm(enumerate(pairs), total=len(pairs), desc="Step 5: Building base table", unit="query"):
             for center, context in sentence_pairs:
                 if (center, query_id) not in embedding_id_map:
                     continue
@@ -77,7 +103,14 @@ class TrainingSampleGenerator:
         # Convert to pandas DataFrames
         vocab_table = pd.DataFrame(list(vocab_dict.items()), columns=['word', 'id'])
         query_table = pd.DataFrame(query_list)
-        embedding_table = pd.DataFrame(list(embedding_dict.items()), columns=['id', 'embedding'])
+        
+        # Create embedding table from numpy array
+        embedding_table = pd.DataFrame({
+            'id': range(len(embedding_array)),
+            'embedding': list(embedding_array)
+        })
+        del embedding_array  # Free memory
+        
         base_table = pd.DataFrame(base_list)
 
         return vocab_table, query_table, embedding_table, base_table
