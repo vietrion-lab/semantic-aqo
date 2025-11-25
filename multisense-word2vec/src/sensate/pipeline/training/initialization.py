@@ -36,15 +36,31 @@ class SenseEmbeddingsInitializer:
             embedding_ids = self.base_table[self.base_table['center_word_id'] == id]['embedding_id'].unique()
             embeddings = self.embedding[self.embedding['id'].isin(embedding_ids)]
 
-            assert len(embeddings) >= self.num_senses, \
-                f"  Not enough embeddings ({len(embeddings)}) for word '{word}' to form {self.num_senses} senses."
-            
-            # Embeddings are already in target dimension (150-dim)
-            features = np.array(embeddings['embedding'].tolist())
-        
-            kmeans = KMeans(n_clusters=self.num_senses, random_state=0)
-            kmeans.fit(features)
-            centers = kmeans.cluster_centers_
+            # Handle words with fewer embeddings than num_senses
+            if len(embeddings) < self.num_senses:
+                # Use available embeddings and duplicate to fill remaining senses
+                features = np.array(embeddings['embedding'].tolist())
+                
+                # If only 1 embedding, duplicate it for all senses
+                if len(features) == 1:
+                    centers = np.tile(features[0], (self.num_senses, 1))
+                else:
+                    # Use available embeddings and add noise for remaining senses
+                    centers = []
+                    for i in range(self.num_senses):
+                        if i < len(features):
+                            centers.append(features[i])
+                        else:
+                            # Add noise to last embedding for additional senses
+                            noise = np.random.randn(features.shape[1]) * 0.01
+                            centers.append(features[-1] + noise)
+                    centers = np.array(centers)
+            else:
+                # Normal clustering with enough embeddings
+                features = np.array(embeddings['embedding'].tolist())
+                kmeans = KMeans(n_clusters=self.num_senses, random_state=0)
+                kmeans.fit(features)
+                centers = kmeans.cluster_centers_
 
             # Store each sense embedding for this word
             for sense_idx in range(self.num_senses):
