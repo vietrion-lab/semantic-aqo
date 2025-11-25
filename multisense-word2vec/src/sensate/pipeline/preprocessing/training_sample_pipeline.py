@@ -55,9 +55,25 @@ class TrainingSampleGenerator:
         # Step 4+5: Build embedding and base tables together (single pass, memory efficient)
         print("🔢 Building embedding and base tables together...")
         
+        # Get embedding dimension from first available embedding
+        first_emb = None
+        for emb_dict in embeddings:
+            if emb_dict:
+                first_emb = next(iter(emb_dict.values()))
+                break
+        
+        if first_emb is None:
+            raise ValueError("No embeddings found in corpus")
+        
+        # Get dimension - handle both numpy arrays and lists
+        if isinstance(first_emb, np.ndarray):
+            emb_dim = first_emb.shape[0]
+        else:
+            emb_dim = len(first_emb)
+        
         # Use pre-sized numpy arrays instead of lists
         total_embeddings = sum(len(emb_dict) for emb_dict in embeddings)
-        embedding_array = np.empty((total_embeddings, embeddings[0][list(embeddings[0].keys())[0]].shape[0]), dtype=np.float32)
+        embedding_array = np.empty((total_embeddings, emb_dim), dtype=np.float32)
         
         # Build base table in chunks using numpy arrays
         chunk_size = 100000
