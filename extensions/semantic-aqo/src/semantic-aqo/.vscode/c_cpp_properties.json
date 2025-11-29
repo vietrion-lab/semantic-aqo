@@ -1,0 +1,22 @@
+{
+  "configurations": [
+    {
+      "name": "Linux",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "/usr/include/postgresql/16/server",
+        "/usr/include/postgresql/16",
+        "/usr/include"
+      ],
+      "defines": [
+        "_GNU_SOURCE",
+        "FRONTEND"
+      ],
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseEngine": "Tag Parser"
+    }
+  ],
+  "version": 4
+}

@@ -1,0 +1,143 @@
+# .docker/Dockerfile.dev
+ARG POSTGRES_VERSION=16
+FROM postgres:${POSTGRES_VERSION}-bookworm
+
+ARG POSTGRES_VERSION
+
+# Install build dependencies với debug tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    postgresql-server-dev-${POSTGRES_VERSION} \
+    gdb \
+    python3-dev \
+    curl \
+    tree \
+    procps \
+    sudo \
+    supervisor \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Configure GDB with pretty-printing support
+RUN mkdir -p /root && \
+    echo 'set pagination off' > /root/.gdbinit && \
+    echo 'set print pretty on' >> /root/.gdbinit && \
+    echo 'set print array-indexes on' >> /root/.gdbinit && \
+    echo 'set print array on' >> /root/.gdbinit && \
+    echo 'set print static-members on' >> /root/.gdbinit && \
+    echo 'break elog' >> /root/.gdbinit
+
+# ✅ ADD CUSTOM BASH ALIASES FOR EASIER DEV
+RUN echo '' >> /root/.bashrc && \
+    echo '# --- Custom aliases for Supervisor and Postgres ---' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Base supervisorctl command, includes config path' >> /root/.bashrc && \
+    echo 'alias superctl="supervisorctl -c /etc/supervisor/conf.d/postgres.conf"' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Shortcuts to manage the [program:postgres]' >> /root/.bashrc && \
+    echo 'alias pg-status="superctl status postgres"' >> /root/.bashrc && \
+    echo 'alias pg-restart="superctl restart postgres"' >> /root/.bashrc && \
+    echo 'alias pg-stop="superctl stop postgres"' >> /root/.bashrc && \
+    echo 'alias pg-start="superctl start postgres"' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Shortcut to allow ALL connections to Postgres (for dev environment)' >> /root/.bashrc && \
+    echo '# This command will add the config and automatically restart postgres' >> /root/.bashrc && \
+    echo 'alias pg-allow-all='\''echo "host all all 0.0.0.0/0 trust" >> /var/lib/postgresql/data/pg_hba.conf && echo "host all all ::/0 trust" >> /var/lib/postgresql/data/pg_hba.conf && echo "✅ Updated pg_hba.conf, restarting Postgres..." && pg-restart'\''' >> /root/.bashrc
+
+# Build extension with debug symbols
+WORKDIR /usr/src/semantic-aqo
+COPY ./src/semantic-aqo/ .
+
+RUN make clean && make && make install
+
+# Verify debug symbols present
+RUN objdump -t /usr/lib/postgresql/${POSTGRES_VERSION}/lib/semantic_aqo.so 2>/dev/null | grep -i debug && echo "✅ Debug symbols verified" || echo "⚠️ Debug symbols check completed"
+
+# ✅ CREATE SUPERVISOR DIRECTORIES
+RUN mkdir -p /etc/supervisor/conf.d /var/log/supervisor /var/run/supervisor
+
+# ✅ CREATE SUPERVISORD CONFIG
+RUN printf '%s\n' \
+'[supervisord]' \
+'user=root' \
+'nodaemon=true' \
+'logfile=/var/log/supervisor/supervisord.log' \
+'pidfile=/var/run/supervisord.pid' \
+'childlogdir=/var/log/supervisor' \
+'' \
+'[unix_http_server]' \
+'file=/var/run/supervisor/supervisor.sock' \
+'chmod=0700' \
+'' \
+'[supervisorctl]' \
+'serverurl=unix:///var/run/supervisor/supervisor.sock' \
+'' \
+'[rpcinterface:supervisor]' \
+'supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface' \
+'' \
+'[program:postgres]' \
+'command=/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/data' \
+'user=postgres' \
+'autostart=true' \
+'autorestart=true' \
+'startsecs=10' \
+'stopwaitsecs=10' \
+'stdout_logfile=/var/log/supervisor/postgres.log' \
+'stderr_logfile=/var/log/supervisor/postgres_error.log' \
+> /etc/supervisor/conf.d/postgres.conf
+
+# ✅ CREATE RELOAD SCRIPT
+RUN printf '%s\n' \
+'#!/bin/bash' \
+'set -e' \
+'' \
+'cd /usr/src/semantic-aqo' \
+'' \
+'echo "[$(date)] Starting rebuild..."' \
+'make clean && make && make install' \
+'' \
+'echo "[$(date)] Restarting PostgreSQL..."' \
+'supervisorctl -c /etc/supervisor/conf.d/postgres.conf restart postgres' \
+'' \
+'echo "[$(date)] ✅ Done!"' \
+> /usr/local/bin/reload-extension.sh && \
+chmod +x /usr/local/bin/reload-extension.sh
+
+# ⭐️ NEW: CREATE CUSTOM DEV ENTRYPOINT to handle initdb and pg_hba.conf
+RUN printf '%s\n' \
+'#!/bin/bash' \
+'set -e' \
+'' \
+'# Check if the data directory is already initialized' \
+'if [ ! -f "/var/lib/postgresql/data/postgresql.conf" ]; then' \
+'    echo "Data directory is not initialized. Running initdb..."' \
+'    ' \
+'    # Ensure dir exists and set correct permissions' \
+'    mkdir -p /var/lib/postgresql/data' \
+'    chown -R postgres:postgres /var/lib/postgresql/data' \
+'    ' \
+'    # Run initdb as the postgres user' \
+'    sudo -u postgres /usr/lib/postgresql/16/bin/initdb -D /var/lib/postgresql/data' \
+'    ' \
+'    echo "Database initialized."' \
+'    ' \
+'    # Automatically add trust rules for dev (DBeaver, etc)' \
+'    echo "host all all 0.0.0.0/0 trust" >> /var/lib/postgresql/data/pg_hba.conf' \
+'    echo "host all all ::/0 trust" >> /var/lib/postgresql/data/pg_hba.conf' \
+'    echo "✅ pg_hba.conf automatically updated for development."' \
+'else' \
+'    echo "Data directory already initialized."' \
+'fi' \
+'' \
+'# Now that the DB is ready, execute the original CMD ("$@")' \
+'exec "$@"' \
+> /usr/local/bin/docker-dev-entrypoint.sh && \
+chmod +x /usr/local/bin/docker-dev-entrypoint.sh
+
+# ✅ VERIFY CONFIG
+RUN echo "=== Supervisor Config ===" && cat /etc/supervisor/conf.d/postgres.conf
+
+# ⭐️ NEW: SET THE NEW ENTRYPOINT
+ENTRYPOINT ["/usr/local/bin/docker-dev-entrypoint.sh"]
+
+# ✅ START SUPERVISORD (this is now passed to the entrypoint)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/postgres.conf"]

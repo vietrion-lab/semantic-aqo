@@ -1,0 +1,24 @@
+# .docker/Dockerfile
+
+# --- Phase 1: Builder ---
+ARG POSTGRES_VERSION=16
+FROM postgres:${POSTGRES_VERSION}-bookworm AS builder
+
+ARG POSTGRES_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    postgresql-server-dev-${POSTGRES_VERSION}
+    
+WORKDIR /usr/src/semantic-aqo
+COPY ./src/semantic-aqo/ .
+
+RUN make && make install
+
+
+# --- Phase 2: Artifacts ---
+FROM scratch AS artifacts
+ARG POSTGRES_VERSION=16
+
+COPY --from=builder /usr/lib/postgresql/${POSTGRES_VERSION}/lib/semantic-aqo.so /artifacts/lib/
+COPY --from=builder /usr/share/postgresql/${POSTGRES_VERSION}/extension/semantic_aqo.control /artifacts/extension/
+COPY --from=builder /usr/share/postgresql/${POSTGRES_VERSION}/extension/semantic_aqo--1.0.sql /artifacts/extension/

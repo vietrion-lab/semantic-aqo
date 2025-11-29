@@ -1,0 +1,62 @@
+// .devcontainer/devcontainer.json
+{
+  "name": "Semantic AQO Postgres Extension Dev",
+  "dockerComposeFile": [
+    "../docker-compose-dev.yml"
+  ],
+  "service": "postgres",
+  "workspaceFolder": "/usr/src/semantic-aqo",
+  "forwardPorts": [
+    "${localEnv:POSTGRES_PORT}"
+  ],
+  "portsAttributes": {
+    "${localEnv:POSTGRES_PORT}": {
+      "label": "PostgreSQL Dev",
+      "onAutoForward": "notify"
+    }
+  },
+  "remoteUser": "root",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": false,
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "ms-vscode.cpptools-themes",
+        "ms-ossdata.vscode-postgresql",
+        "ms-vscode.makefile-tools",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "C_Cpp.default.compilerPath": "/usr/bin/gcc",
+        "C_Cpp.default.cStandard": "c17",
+        "C_Cpp.default.intelliSenseEngine": "Tag Parser",
+        "C_Cpp.default.includePath": [
+          "/usr/include/postgresql/16/server",
+          "/usr/include/postgresql/16",
+          "${workspaceFolder}",
+          "${workspaceFolder}/src"
+        ],
+        "C_Cpp.default.defines": [
+          "_GNU_SOURCE",
+          "FRONTEND",
+          "DEBUG"
+        ],
+        "files.watcherExclude": {
+          "**/*.o": true,
+          "**/*.so": true,
+          "**/.deps": true
+        },
+        "search.exclude": {
+          "**/*.o": true,
+          "**/*.so": true
+        },
+        "[c]": {
+          "editor.defaultFormatter": "ms-vscode.cpptools",
+          "editor.formatOnSave": true
+        }
+      }
+    }
+  }
+}

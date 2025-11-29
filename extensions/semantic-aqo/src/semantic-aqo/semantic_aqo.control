@@ -1,0 +1,6 @@
+# src/semantic-aqo/semantic-aqo.control
+
+comment = 'Semantic-AQO basic functions'
+default_version = '1.0'
+module_pathname = '$libdir/semantic_aqo'
+relocatable = true

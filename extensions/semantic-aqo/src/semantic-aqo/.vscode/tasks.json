@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "rebuild-extension",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "cd /usr/src/semantic-aqo && make clean && make && make install && supervisorctl -c /etc/supervisor/conf.d/postgres.conf restart postgres"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true
+      }
+    }
+  ]
+}

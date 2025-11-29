@@ -1,0 +1,29 @@
+# docker-compose-prod.yml
+services:
+  postgres:
+    # Build image from Dockerfile
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile.deploy
+      args:
+        POSTGRES_VERSION: ${POSTGRES_VERSION}
+
+    image: semantic-aqo-pg-image:${POSTGRES_VERSION}
+    container_name: semantic-aqo-pg-container
+    
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      
+    ports:
+      - "${POSTGRES_PORT}:5432"
+      
+    volumes:
+      # Mapping source code directory to container
+      - ./src/semantic-aqo:/usr/src/semantic-aqo
+      
+      # Persisting Postgres data
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

@@ -1,0 +1,10 @@
+# Ignore .env files but keep example
+*.env
+!.env.example
+.claude/
+
+# Ignore compiled files
+*.o
+*.so
+*.bc
+

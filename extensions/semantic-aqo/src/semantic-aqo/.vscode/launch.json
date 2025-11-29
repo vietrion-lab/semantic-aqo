@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Extension (Attach) - LLDB",
+      "type": "lldb",
+      "request": "attach",
+      "pid": "${command:pickProcess}",
+      "program": "/usr/lib/postgresql/16/bin/postgres",
+      "sourceLanguages": [
+        "c"
+      ],
+      "logging": {
+        "level": "verbose"
+      }
+    }
+  ]
+}

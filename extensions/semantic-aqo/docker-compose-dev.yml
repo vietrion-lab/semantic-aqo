@@ -1,0 +1,64 @@
+# docker-compose-dev.yml
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile.dev
+      args:
+        POSTGRES_VERSION: ${POSTGRES_VERSION}
+    
+    # Capabilities for debugging
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    
+    # Security options for debugging
+    security_opt:
+      - "apparmor=unconfined"
+    
+    image: semantic-aqo-pg-image:${POSTGRES_VERSION}
+    container_name: semantic-aqo-pg-dev
+    
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # PostgreSQL optimization for development
+      POSTGRES_INITDB_ARGS: "-c shared_preload_libraries=semantic_aqo"
+    
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    
+    volumes:
+      # Source code - live editing
+      - ./src/semantic-aqo:/usr/src/semantic-aqo
+      
+      # Data persistence
+      - pgdata:/var/lib/postgresql/data
+      
+      # VSCode settings persistence
+      - vscode-settings:/root/.vscode-server
+      
+      # VSCode extensions persistence
+      - vscode-extensions:/root/.vscode-server/extensions
+    
+    # Health check - ensure PostgreSQL is ready
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    
+    stdin_open: true
+    tty: true
+
+volumes:
+  pgdata:
+    driver: local
+  
+  vscode-settings:
+    driver: local
+
+  vscode-extensions:
+    driver: local
