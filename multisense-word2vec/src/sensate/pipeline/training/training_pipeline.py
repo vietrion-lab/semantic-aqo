@@ -265,10 +265,9 @@ class Trainer:
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
         
-        # Use Accelerator for single GPU (no distributed training)
         acce = Accelerator(
-            mixed_precision='bf16',  # BF16 for A100 GPU
-            cpu=False,  # Force GPU usage
+            mixed_precision='fp16',
+            cpu=False,
             split_batches=False
         )
         self.model = Sensate(
@@ -288,19 +287,18 @@ class Trainer:
         )
         dataloader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=self.config.training.batch_size * 4,  # 4x larger for A100
+            batch_size=self.config.training.batch_size * 2,
             shuffle=True,
-            num_workers=4,  # Parallel data loading
-            pin_memory=True,  # Faster GPU transfer
-            prefetch_factor=4,  # Prefetch 4 batches ahead
-            persistent_workers=True,  # Keep workers alive between epochs
+            num_workers=4,
+            pin_memory=True,
+            prefetch_factor=4,
+            persistent_workers=True,
             collate_fn=collate_fn
         )
-        # Use fused AdamW for A100 (up to 2x faster)
         opt = torch.optim.AdamW(
             self.model.parameters(),
-            lr=self.config.training.learning_rate * 2,  # Scale LR with batch size
-            fused=torch.cuda.is_available()  # Fused kernels for speed
+            lr=self.config.training.learning_rate,
+            fused=torch.cuda.is_available()
         )
 
         self.model, optimizer, dataloader = acce.prepare(self.model, opt, dataloader)
@@ -316,7 +314,7 @@ class Trainer:
             # Training phase
             self.model.train()
             for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", leave=False, unit="batch"):
-                optimizer.zero_grad(set_to_none=True)  # Faster than zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 loss = self.model(
                     center_pos=batch['center_pos'],
                     context_ids=batch['context_ids'],
@@ -417,6 +415,20 @@ class Trainer:
         print(f"✓ Vocabulary saved to {vocab_path}")
         print(f"  Total words: {len(self.vocab_table)}")
         
+        # Save vocabulary as binary format for PostgreSQL
+        vocab_bin_path = os.path.join(path, 'vocab.bin')
+        with open(vocab_bin_path, 'wb') as f:
+            # Write number of records
+            f.write(len(self.vocab_table).to_bytes(4, byteorder='little'))
+            for _, row in self.vocab_table.iterrows():
+                # Write word length and word (UTF-8 encoded)
+                word_bytes = row['word'].encode('utf-8')
+                f.write(len(word_bytes).to_bytes(4, byteorder='little'))
+                f.write(word_bytes)
+                # Write word id
+                f.write(int(row['id']).to_bytes(4, byteorder='little'))
+        print(f"✓ Vocabulary binary saved to {vocab_bin_path}")
+        
         # Get sense embeddings from model [V, K, D]
         sense_embeddings = self.model.sense_embeddings.detach().cpu().numpy()
         n_vocab, n_sense, embedding_dim = sense_embeddings.shape
@@ -443,6 +455,30 @@ class Trainer:
         sense_df.to_csv(csv_path, index=False)
         print(f"✓ Sense embeddings saved to {csv_path}")
         print(f"  Total records: {len(records)} ({n_vocab} words × {n_sense} senses)")
+        
+        # Save sense embeddings as binary format for PostgreSQL
+        bin_path = os.path.join(path, 'sense_embeddings.bin')
+        with open(bin_path, 'wb') as f:
+            # Write metadata: number of records, embedding dimension
+            f.write(len(records).to_bytes(4, byteorder='little'))
+            f.write(embedding_dim.to_bytes(4, byteorder='little'))
+            
+            # Write each record
+            for record in records:
+                # Write word length and word (UTF-8 encoded)
+                word_bytes = record['word'].encode('utf-8')
+                f.write(len(word_bytes).to_bytes(4, byteorder='little'))
+                f.write(word_bytes)
+                
+                # Write sense_id
+                f.write(int(record['sense_id']).to_bytes(4, byteorder='little'))
+                
+                # Write embedding as float32
+                embedding_array = np.array(record['embedding'], dtype=np.float32)
+                f.write(embedding_array.tobytes())
+        
+        print(f"✓ Sense embeddings binary saved to {bin_path}")
+        print(f"  Binary file size: {os.path.getsize(bin_path) / (1024*1024):.2f} MB")
         
         # Also save the model state dict
         model_path = os.path.join(path, 'model.pt')
