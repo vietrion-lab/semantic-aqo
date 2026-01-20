@@ -310,9 +310,10 @@ class Trainer:
             fused=torch.cuda.is_available()
         )
         
-        # Learning rate scheduler - Golden Exponential Decay
-        INV_PHI = 0.61803398875  # Tỷ lệ vàng nghịch đảo (~0.618)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=INV_PHI)
+        # Learning rate scheduler - Reduce on plateau for adaptive learning
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode='max', factor=0.5, patience=2, min_lr=1e-6, verbose=True
+        )
 
         self.model, optimizer, dataloader = acce.prepare(self.model, opt, dataloader)
         
@@ -396,16 +397,17 @@ class Trainer:
                 
                 # Save checkpoint
                 self._save_checkpoint(epoch + 1, eval_results['avg_f1'], is_best=is_best)
+                
+                # Step the scheduler based on avg_f1 (ReduceLROnPlateau needs metric)
+                scheduler.step(eval_results['avg_f1'])
             else:
                 # Just record training loss
                 self.history['epoch'].append(epoch + 1)
                 self.history['train_loss'].append(avg_loss)
                 print(f"Epoch {epoch+1}/{self.config.training.num_epochs} - Loss: {avg_loss:.4f}")
             
-            # Step the scheduler after each epoch
-            scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Learning rate updated to: {current_lr:.6f}")
+            print(f"Learning rate: {current_lr:.6f}")
         
         # Save final visualization and history
         print("\n" + "="*60)

@@ -128,9 +128,9 @@ class Sensate(nn.Module):
         
         # Combine losses with adjusted weights
         alpha_w2v = 1.0
-        alpha_distill = 0.5  # Increased from 0.3
-        alpha_orth = 0.05    # Reduced from 0.1
-        alpha_ent = 0.005    # Reduced from 0.01
+        alpha_distill = 0.1
+        alpha_orth = 0.15    # Increased to force sense separation
+        alpha_ent = 0.02     # Increased to encourage sense diversity
         alpha_l2 = 0.0001    # Reduced from 0.001
         
         total_loss = (alpha_w2v * L_w2v + 
