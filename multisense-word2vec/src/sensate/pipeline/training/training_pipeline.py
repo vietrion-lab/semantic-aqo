@@ -320,13 +320,13 @@ class Trainer:
         print("🚀 Starting Training with Evaluation Tracking")
         print("="*60)
         
-        for epoch in tqdm(range(self.config.training.num_epochs), desc="Training Epochs", unit="epoch"):
+        for epoch in range(self.config.training.num_epochs):
             epoch_loss = 0.0
             batch_count = 0
             
             # Training phase
             self.model.train()
-            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", leave=False, unit="batch")
+            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", unit="batch")
             for batch in pbar:
                 optimizer.zero_grad(set_to_none=True)
                 loss = self.model(
