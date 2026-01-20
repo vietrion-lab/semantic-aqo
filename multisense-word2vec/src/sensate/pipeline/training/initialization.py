@@ -51,8 +51,8 @@ class SenseEmbeddingsInitializer:
                         if i < len(features):
                             centers.append(features[i])
                         else:
-                            # Add noise to last embedding for additional senses
-                            noise = np.random.randn(features.shape[1]) * 0.01
+                            # Add more significant noise to differentiate senses
+                            noise = np.random.randn(features.shape[1]) * 0.1  # Increased from 0.01
                             centers.append(features[-1] + noise)
                     centers = np.array(centers)
             else:

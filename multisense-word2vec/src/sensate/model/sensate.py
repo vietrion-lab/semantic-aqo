@@ -67,7 +67,9 @@ class Sensate(nn.Module):
         print(f"Sense Embeddings Parameter: {sense_embeddings.shape}")
         print("=" * 20)
 
-        output_embeddings_tensor = torch.randn(vocab_table.shape[0], embedding_dim) * 0.01
+        # Better initialization for output embeddings using Xavier/Glorot uniform
+        output_embeddings_tensor = torch.empty(vocab_table.shape[0], embedding_dim)
+        nn.init.xavier_uniform_(output_embeddings_tensor)
         
         # Register as trainable parameters
         self.sense_embeddings = nn.Parameter(sense_embeddings)          # [V, K, D]
@@ -105,9 +107,9 @@ class Sensate(nn.Module):
             context_sense_embeddings=context_sense_embeddings
         )
         
-        # Word2vec SG naive softmax loss
+        # Word2vec SG naive softmax loss with label smoothing
         logits = max_pooled_embedding @ self.output_embeddings.T
-        L_w2v = F.cross_entropy(logits, context_ids, reduction='mean')
+        L_w2v = F.cross_entropy(logits, context_ids, reduction='mean', label_smoothing=0.1)
 
         # Distillation loss
         L_distill = F.mse_loss(max_pooled_embedding, bert_embeddings, reduction='mean')
@@ -124,7 +126,27 @@ class Sensate(nn.Module):
         # L2 regularization
         L2_reg = sum(torch.norm(p, p=2)**2 for p in self.parameters())
         
-        # Combine losses
-        total_loss = L_w2v + 0.3 * L_distill + 0.1 * L_orth + 0.01 * L_ent + 0.001 * L2_reg
+        # Combine losses with adjusted weights
+        alpha_w2v = 1.0
+        alpha_distill = 0.5  # Increased from 0.3
+        alpha_orth = 0.05    # Reduced from 0.1
+        alpha_ent = 0.005    # Reduced from 0.01
+        alpha_l2 = 0.0001    # Reduced from 0.001
+        
+        total_loss = (alpha_w2v * L_w2v + 
+                     alpha_distill * L_distill + 
+                     alpha_orth * L_orth + 
+                     alpha_ent * L_ent + 
+                     alpha_l2 * L2_reg)
+        
+        # Store loss components for debugging (attach to tensor)
+        if hasattr(self, 'training') and self.training:
+            self.last_loss_components = {
+                'L_w2v': L_w2v.item(),
+                'L_distill': L_distill.item(),
+                'L_orth': L_orth.item(),
+                'L_ent': L_ent.item(),
+                'L2_reg': L2_reg.item()
+            }
 
         return total_loss

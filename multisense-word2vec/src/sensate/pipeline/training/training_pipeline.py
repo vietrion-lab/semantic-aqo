@@ -309,6 +309,10 @@ class Trainer:
             lr=self.config.training.learning_rate,
             fused=torch.cuda.is_available()
         )
+        
+        # Learning rate scheduler - Golden Exponential Decay
+        INV_PHI = 0.61803398875  # Tỷ lệ vàng nghịch đảo (~0.618)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=INV_PHI)
 
         self.model, optimizer, dataloader = acce.prepare(self.model, opt, dataloader)
         
@@ -322,7 +326,8 @@ class Trainer:
             
             # Training phase
             self.model.train()
-            for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", leave=False, unit="batch"):
+            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", leave=False, unit="batch")
+            for batch in pbar:
                 optimizer.zero_grad(set_to_none=True)
                 loss = self.model(
                     center_pos=batch['center_pos'],
@@ -337,6 +342,21 @@ class Trainer:
                 
                 epoch_loss += loss.item()
                 batch_count += 1
+                
+                # Update tqdm with current loss and components
+                current_avg_loss = epoch_loss / batch_count
+                postfix_dict = {'loss': f'{current_avg_loss:.4f}', 'lr': f'{optimizer.param_groups[0]["lr"]:.6f}'}
+                
+                # Add loss components if available (every 10 batches to reduce overhead)
+                if batch_count % 10 == 0 and hasattr(self.model, 'last_loss_components'):
+                    components = self.model.last_loss_components
+                    postfix_dict.update({
+                        'w2v': f'{components["L_w2v"]:.3f}',
+                        'dist': f'{components["L_distill"]:.3f}',
+                        'orth': f'{components["L_orth"]:.4f}'
+                    })
+                
+                pbar.set_postfix(postfix_dict)
             
             avg_loss = epoch_loss / batch_count if batch_count > 0 else 0.0
             
@@ -379,6 +399,11 @@ class Trainer:
                 self.history['epoch'].append(epoch + 1)
                 self.history['train_loss'].append(avg_loss)
                 tqdm.write(f"Epoch {epoch+1}/{self.config.training.num_epochs} - Loss: {avg_loss:.4f}")
+            
+            # Step the scheduler after each epoch
+            scheduler.step()
+            current_lr = optimizer.param_groups[0]['lr']
+            tqdm.write(f"Learning rate updated to: {current_lr:.6f}")
         
         # Save final visualization and history
         print("\n" + "="*60)
