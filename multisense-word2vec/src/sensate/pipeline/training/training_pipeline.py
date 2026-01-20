@@ -326,7 +326,9 @@ class Trainer:
             
             # Training phase
             self.model.train()
-            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", unit="batch")
+            pbar = tqdm(dataloader, desc=f"[Epoch {epoch+1}/{self.config.training.num_epochs}]", 
+                       unit="batch", mininterval=1.0, ncols=150)
+            
             for batch in pbar:
                 optimizer.zero_grad(set_to_none=True)
                 loss = self.model(
@@ -343,20 +345,20 @@ class Trainer:
                 epoch_loss += loss.item()
                 batch_count += 1
                 
-                # Update tqdm with current loss and components
-                current_avg_loss = epoch_loss / batch_count
-                postfix_dict = {'loss': f'{current_avg_loss:.4f}', 'lr': f'{optimizer.param_groups[0]["lr"]:.6f}'}
+                # Update progress bar with all loss components
+                avg_loss = epoch_loss / batch_count
+                lr = optimizer.param_groups[0]['lr']
                 
-                # Add loss components if available (every 10 batches to reduce overhead)
-                if batch_count % 10 == 0 and hasattr(self.model, 'last_loss_components'):
-                    components = self.model.last_loss_components
-                    postfix_dict.update({
-                        'w2v': f'{components["L_w2v"]:.3f}',
-                        'dist': f'{components["L_distill"]:.3f}',
-                        'orth': f'{components["L_orth"]:.4f}'
-                    })
-                
-                pbar.set_postfix(postfix_dict)
+                if hasattr(self.model, 'last_loss_components'):
+                    comp = self.model.last_loss_components
+                    pbar.set_postfix_str(
+                        f"Loss={avg_loss:.4f} | LR={lr:.6f} | W2V={comp['L_w2v']:.3f} | "
+                        f"Dist={comp['L_distill']:.3f} | Orth={comp['L_orth']:.4f}"
+                    )
+                else:
+                    pbar.set_postfix_str(f"Loss={avg_loss:.4f} | LR={lr:.6f}")
+            
+            pbar.close()
             
             avg_loss = epoch_loss / batch_count if batch_count > 0 else 0.0
             
