@@ -398,12 +398,12 @@ class Trainer:
                 # Just record training loss
                 self.history['epoch'].append(epoch + 1)
                 self.history['train_loss'].append(avg_loss)
-                tqdm.write(f"Epoch {epoch+1}/{self.config.training.num_epochs} - Loss: {avg_loss:.4f}")
+                print(f"Epoch {epoch+1}/{self.config.training.num_epochs} - Loss: {avg_loss:.4f}")
             
             # Step the scheduler after each epoch
             scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
-            tqdm.write(f"Learning rate updated to: {current_lr:.6f}")
+            print(f"Learning rate updated to: {current_lr:.6f}")
         
         # Save final visualization and history
         print("\n" + "="*60)
