@@ -313,6 +313,10 @@ class BERTExtractor:
         else:
             result = [emb.tolist() for emb in batch_embeddings]
         
+        # Clear CUDA cache to free memory
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         return result
 
 
