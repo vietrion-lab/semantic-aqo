@@ -54,19 +54,28 @@ class Trainer:
             ipca=None
         )
         
-        # Use only a sample for fitting IPCA
-        sample_size = min(100, len(preprocessed_data))
+        # Use sample for fitting IPCA
+        sample_size = min(50, len(preprocessed_data))
         sample_data = preprocessed_data[:sample_size]
         
         _, _, sample_embedding_table, _ = temp_generator(corpus=sample_data)
         
-        # Extract embeddings and fit IPCA
-        sample_embeddings = np.array(sample_embedding_table['embedding'].tolist())
-        print(f"   Sample size: {len(sample_embeddings)} embeddings")
+        # Extract embeddings and fit IPCA incrementally to avoid OOM
+        print(f"   Sample queries: {sample_size}")
         print(f"   Fitting IPCA: 768 -> {self.config.training.embedding_dim} dimensions")
         
-        ipca = IncrementalPCA(n_components=self.config.training.embedding_dim, batch_size=min(1000, len(sample_embeddings)))
-        ipca.fit(sample_embeddings)
+        ipca = IncrementalPCA(n_components=self.config.training.embedding_dim, batch_size=256)
+        
+        # Fit incrementally in batches
+        batch_size = 512
+        total_embeddings = len(sample_embedding_table)
+        print(f"   Total sample embeddings: {total_embeddings}")
+        
+        for i in range(0, total_embeddings, batch_size):
+            batch_df = sample_embedding_table.iloc[i:i+batch_size]
+            batch_embeddings = np.array(batch_df['embedding'].tolist())
+            ipca.partial_fit(batch_embeddings)
+            print(f"   Fitted batch {i//batch_size + 1}/{(total_embeddings + batch_size - 1)//batch_size}")
         print(f"   ✓ IPCA fitted on sample")
         
         return ipca
@@ -265,10 +274,9 @@ class Trainer:
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
         
-        # Use Accelerator for single GPU (no distributed training)
         acce = Accelerator(
-            mixed_precision='bf16',  # BF16 for A100 GPU
-            cpu=False,  # Force GPU usage
+            mixed_precision='fp16',
+            cpu=False,
             split_batches=False
         )
         self.model = Sensate(
@@ -288,19 +296,23 @@ class Trainer:
         )
         dataloader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=self.config.training.batch_size * 4,  # 4x larger for A100
+            batch_size=self.config.training.batch_size * 2,
             shuffle=True,
-            num_workers=4,  # Parallel data loading
-            pin_memory=True,  # Faster GPU transfer
-            prefetch_factor=4,  # Prefetch 4 batches ahead
-            persistent_workers=True,  # Keep workers alive between epochs
+            num_workers=4,
+            pin_memory=True,
+            prefetch_factor=4,
+            persistent_workers=True,
             collate_fn=collate_fn
         )
-        # Use fused AdamW for A100 (up to 2x faster)
         opt = torch.optim.AdamW(
             self.model.parameters(),
-            lr=self.config.training.learning_rate * 2,  # Scale LR with batch size
-            fused=torch.cuda.is_available()  # Fused kernels for speed
+            lr=self.config.training.learning_rate,
+            fused=torch.cuda.is_available()
+        )
+        
+        # Learning rate scheduler - Reduce on plateau for adaptive learning
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode='max', factor=0.5, patience=2, min_lr=1e-6
         )
 
         self.model, optimizer, dataloader = acce.prepare(self.model, opt, dataloader)
@@ -309,14 +321,17 @@ class Trainer:
         print("🚀 Starting Training with Evaluation Tracking")
         print("="*60)
         
-        for epoch in tqdm(range(self.config.training.num_epochs), desc="Training Epochs", unit="epoch"):
+        for epoch in range(self.config.training.num_epochs):
             epoch_loss = 0.0
             batch_count = 0
             
             # Training phase
             self.model.train()
-            for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{self.config.training.num_epochs}", leave=False, unit="batch"):
-                optimizer.zero_grad(set_to_none=True)  # Faster than zero_grad()
+            pbar = tqdm(dataloader, desc=f"[Epoch {epoch+1}/{self.config.training.num_epochs}]", 
+                       unit="batch", mininterval=1.0, ncols=150)
+            
+            for batch in pbar:
+                optimizer.zero_grad(set_to_none=True)
                 loss = self.model(
                     center_pos=batch['center_pos'],
                     context_ids=batch['context_ids'],
@@ -330,6 +345,21 @@ class Trainer:
                 
                 epoch_loss += loss.item()
                 batch_count += 1
+                
+                # Update progress bar with all loss components
+                avg_loss = epoch_loss / batch_count
+                lr = optimizer.param_groups[0]['lr']
+                
+                if hasattr(self.model, 'last_loss_components'):
+                    comp = self.model.last_loss_components
+                    pbar.set_postfix_str(
+                        f"Loss={avg_loss:.4f} | LR={lr:.6f} | W2V={comp['L_w2v']:.3f} | "
+                        f"Dist={comp['L_distill']:.3f} | Orth={comp['L_orth']:.4f}"
+                    )
+                else:
+                    pbar.set_postfix_str(f"Loss={avg_loss:.4f} | LR={lr:.6f}")
+            
+            pbar.close()
             
             avg_loss = epoch_loss / batch_count if batch_count > 0 else 0.0
             
@@ -367,11 +397,17 @@ class Trainer:
                 
                 # Save checkpoint
                 self._save_checkpoint(epoch + 1, eval_results['avg_f1'], is_best=is_best)
+                
+                # Step the scheduler based on avg_f1 (ReduceLROnPlateau needs metric)
+                scheduler.step(eval_results['avg_f1'])
             else:
                 # Just record training loss
                 self.history['epoch'].append(epoch + 1)
                 self.history['train_loss'].append(avg_loss)
-                tqdm.write(f"Epoch {epoch+1}/{self.config.training.num_epochs} - Loss: {avg_loss:.4f}")
+                print(f"Epoch {epoch+1}/{self.config.training.num_epochs} - Loss: {avg_loss:.4f}")
+            
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Learning rate: {current_lr:.6f}")
         
         # Save final visualization and history
         print("\n" + "="*60)
@@ -417,6 +453,20 @@ class Trainer:
         print(f"✓ Vocabulary saved to {vocab_path}")
         print(f"  Total words: {len(self.vocab_table)}")
         
+        # Save vocabulary as binary format for PostgreSQL
+        vocab_bin_path = os.path.join(path, 'vocab.bin')
+        with open(vocab_bin_path, 'wb') as f:
+            # Write number of records
+            f.write(len(self.vocab_table).to_bytes(4, byteorder='little'))
+            for _, row in self.vocab_table.iterrows():
+                # Write word length and word (UTF-8 encoded)
+                word_bytes = row['word'].encode('utf-8')
+                f.write(len(word_bytes).to_bytes(4, byteorder='little'))
+                f.write(word_bytes)
+                # Write word id
+                f.write(int(row['id']).to_bytes(4, byteorder='little'))
+        print(f"✓ Vocabulary binary saved to {vocab_bin_path}")
+        
         # Get sense embeddings from model [V, K, D]
         sense_embeddings = self.model.sense_embeddings.detach().cpu().numpy()
         n_vocab, n_sense, embedding_dim = sense_embeddings.shape
@@ -443,6 +493,30 @@ class Trainer:
         sense_df.to_csv(csv_path, index=False)
         print(f"✓ Sense embeddings saved to {csv_path}")
         print(f"  Total records: {len(records)} ({n_vocab} words × {n_sense} senses)")
+        
+        # Save sense embeddings as binary format for PostgreSQL
+        bin_path = os.path.join(path, 'sense_embeddings.bin')
+        with open(bin_path, 'wb') as f:
+            # Write metadata: number of records, embedding dimension
+            f.write(len(records).to_bytes(4, byteorder='little'))
+            f.write(embedding_dim.to_bytes(4, byteorder='little'))
+            
+            # Write each record
+            for record in records:
+                # Write word length and word (UTF-8 encoded)
+                word_bytes = record['word'].encode('utf-8')
+                f.write(len(word_bytes).to_bytes(4, byteorder='little'))
+                f.write(word_bytes)
+                
+                # Write sense_id
+                f.write(int(record['sense_id']).to_bytes(4, byteorder='little'))
+                
+                # Write embedding as float32
+                embedding_array = np.array(record['embedding'], dtype=np.float32)
+                f.write(embedding_array.tobytes())
+        
+        print(f"✓ Sense embeddings binary saved to {bin_path}")
+        print(f"  Binary file size: {os.path.getsize(bin_path) / (1024*1024):.2f} MB")
         
         # Also save the model state dict
         model_path = os.path.join(path, 'model.pt')

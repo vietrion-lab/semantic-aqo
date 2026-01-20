@@ -15,5 +15,6 @@ venv
 __pycache__
 output/model
 .env
+.bin
 
 checkpoints/

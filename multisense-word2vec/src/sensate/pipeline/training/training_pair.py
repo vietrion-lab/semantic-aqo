@@ -46,11 +46,12 @@ class TrainingPairDataset(Dataset):
         center_pos_list = base_table['center_pos'].values
         context_ids_list = base_table['context_word_id'].values
         query_ids_list = base_table['sql_query_id'].values
+        embedding_ids_list = base_table['embedding_id'].values
         
         # Create word->id mapping for O(1) lookup
         word_to_id = dict(zip(vocab_table['word'].values, vocab_table['id'].values))
         
-        # Create query_id->embedding mapping
+        # Create embedding_id->embedding mapping
         if isinstance(bert_embedding_table, MemoryEfficientEmbeddingTable):
             embedding_df = bert_embedding_table.to_dataframe()
         else:
@@ -70,6 +71,7 @@ class TrainingPairDataset(Dataset):
         self.center_pos = torch.from_numpy(center_pos_list).long()
         self.context_ids = torch.from_numpy(context_ids_list).long()
         self.query_ids = query_ids_list
+        self.embedding_ids = embedding_ids_list
         self.query_token_ids_dict = query_token_ids_dict
         self.embedding_dict = embedding_dict
         
@@ -80,10 +82,11 @@ class TrainingPairDataset(Dataset):
 
     def __getitem__(self, idx):
         query_id = self.query_ids[idx]
+        embedding_id = self.embedding_ids[idx]
         
         return {
             'center_pos': self.center_pos[idx],
             'context_ids': self.context_ids[idx],
             'query_token_ids': torch.from_numpy(self.query_token_ids_dict[query_id]).long(),
-            'bert_embeddings': torch.tensor(self.embedding_dict[query_id], dtype=torch.float32),
+            'bert_embeddings': torch.tensor(self.embedding_dict[embedding_id], dtype=torch.float32),
         }

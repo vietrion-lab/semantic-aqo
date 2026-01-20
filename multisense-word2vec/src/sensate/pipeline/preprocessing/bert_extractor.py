@@ -39,40 +39,33 @@ class BERTExtractor:
         self.tokenizer = RobertaTokenizer.from_pretrained(model_name)
         self.model = RobertaModel.from_pretrained(
             model_name,
-            output_hidden_states=True  # Required to get all layer outputs
+            output_hidden_states=True
         )
         
-        # Move model to GPU if available and optimize for inference
         self.model.to(device)
-        self.model.eval()  # Set to evaluation mode
+        self.model.eval()
         
-        # Compile model with torch.compile for A100 (PyTorch 2.0+)
-        # This can give 2-3x speedup
+        # Compile model with torch.compile
         try:
             self.model = torch.compile(self.model, mode='max-autotune')
             print(f"✅ Model compiled with torch.compile for maximum speed")
         except Exception as e:
             print(f"⚠️  torch.compile not available, using eager mode: {e}")
         
-        # Optimize for A100 GPU
         if torch.cuda.is_available():
-            # Enable TF32 for Ampere GPUs (A100, RTX 30xx)
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            # Enable BF16 for A100 (better numerical stability than FP16)
             torch.set_float32_matmul_precision('high')
-            # Optimize CUDA kernels for maximum throughput
             torch.backends.cudnn.benchmark = True
             torch.backends.cudnn.deterministic = False
-            # Enable tensor cores
-            torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
+            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
         
         self.ipca = ipca
         
         if self.ipca is not None:
             print(f"✅ BERT model loaded with IPCA projection (768 -> {self.ipca.n_components} dim)")
         else:
-            print(f"✅ BERT model loaded successfully on {device} with GPU optimizations")
+            print(f"✅ BERT model loaded successfully on {device}")
     
     def __call__(self, tokens: List[str]) -> list:
         """
@@ -272,8 +265,6 @@ class BERTExtractor:
         # Move inputs to GPU with non_blocking for async transfer
         inputs = {key: val.to(device, non_blocking=True) for key, val in inputs.items()}
         
-        # Get model outputs with BF16 on A100 for maximum speed
-        # A100 supports BF16 which is faster and more stable than FP16
         dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
             outputs = self.model(**inputs)
@@ -321,6 +312,10 @@ class BERTExtractor:
             result = [emb.tolist() for emb in batch_embeddings]
         else:
             result = [emb.tolist() for emb in batch_embeddings]
+        
+        # Clear CUDA cache to free memory
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         return result
 

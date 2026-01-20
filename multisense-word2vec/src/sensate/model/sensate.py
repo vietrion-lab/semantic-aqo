@@ -50,8 +50,7 @@ class Sensate(nn.Module):
             num_senses=num_senses
         )()
         
-        # Re-optimize the updated embedding table
-        del self.embedding_table  # Free old storage
+        del self.embedding_table
         self.embedding_table = optimize_embedding_table(
             updated_embedding_df,
             cache_size=10000,
@@ -68,7 +67,9 @@ class Sensate(nn.Module):
         print(f"Sense Embeddings Parameter: {sense_embeddings.shape}")
         print("=" * 20)
 
-        output_embeddings_tensor = torch.randn(vocab_table.shape[0], embedding_dim) * 0.01
+        # Better initialization for output embeddings using Xavier/Glorot uniform
+        output_embeddings_tensor = torch.empty(vocab_table.shape[0], embedding_dim)
+        nn.init.xavier_uniform_(output_embeddings_tensor)
         
         # Register as trainable parameters
         self.sense_embeddings = nn.Parameter(sense_embeddings)          # [V, K, D]
@@ -84,9 +85,8 @@ class Sensate(nn.Module):
     ) -> torch.Tensor:
         batch_size = query_token_ids.shape[0]
         
-        # Use advanced indexing instead of gather for faster performance on A100
-        center_word_ids = query_token_ids[torch.arange(batch_size, device=query_token_ids.device), center_pos]  # [B]
-        center_sense_embeddings = self.sense_embeddings[center_word_ids]  # [B, K, D]
+        center_word_ids = query_token_ids[torch.arange(batch_size, device=query_token_ids.device), center_pos]
+        center_sense_embeddings = self.sense_embeddings[center_word_ids]
         
         all_query_sense_embeddings = self.sense_embeddings[query_token_ids]  # [B, T, K, D]
         
@@ -105,30 +105,48 @@ class Sensate(nn.Module):
             query_token_ids=query_token_ids,
             center_sense_embeddings=center_sense_embeddings,
             context_sense_embeddings=context_sense_embeddings
-        ) # shape: (batch_size, embedding_dim), (batch_size, num_senses)
+        )
         
-        # Optimized loss computations using fused operations
-        # Word2vec SG naive softmax loss - use @ for faster matmul on A100
-        logits = max_pooled_embedding @ self.output_embeddings.T  # [B, V]
-        L_w2v = F.cross_entropy(logits, context_ids, reduction='mean')
+        # Word2vec SG naive softmax loss with label smoothing
+        logits = max_pooled_embedding @ self.output_embeddings.T
+        L_w2v = F.cross_entropy(logits, context_ids, reduction='mean', label_smoothing=0.1)
 
-        # Distillation loss - fused MSE
+        # Distillation loss
         L_distill = F.mse_loss(max_pooled_embedding, bert_embeddings, reduction='mean')
         
-        # Orthogonality loss - optimized with einsum for A100 tensor cores
-        normalized_embeddings = F.normalize(center_sense_embeddings, p=2, dim=-1)  # [B, K, D]
-        similarity_matrix = torch.bmm(normalized_embeddings, normalized_embeddings.transpose(1, 2))  # [B, K, K]
-        # Only upper triangle, excluding diagonal
+        # Orthogonality loss
+        normalized_embeddings = F.normalize(center_sense_embeddings, p=2, dim=-1)
+        similarity_matrix = torch.bmm(normalized_embeddings, normalized_embeddings.transpose(1, 2))
         triu_mask = torch.triu(torch.ones_like(similarity_matrix[0]), diagonal=1).bool()
         L_orth = (similarity_matrix[:, triu_mask].pow(2)).mean()
         
-        # Entropy loss - numerically stable
+        # Entropy loss
         L_ent = -(gating_probs * torch.log(gating_probs.clamp(min=1e-12))).sum(dim=-1).mean()
         
-        # L2 regularization - use torch.norm for better performance
+        # L2 regularization
         L2_reg = sum(torch.norm(p, p=2)**2 for p in self.parameters())
         
-        # Combine losses
-        total_loss = L_w2v + 0.3 * L_distill + 0.1 * L_orth + 0.01 * L_ent + 0.001 * L2_reg
+        # Combine losses with adjusted weights
+        alpha_w2v = 1.0
+        alpha_distill = 0.1
+        alpha_orth = 0.15    # Increased to force sense separation
+        alpha_ent = 0.02     # Increased to encourage sense diversity
+        alpha_l2 = 0.0001    # Reduced from 0.001
+        
+        total_loss = (alpha_w2v * L_w2v + 
+                     alpha_distill * L_distill + 
+                     alpha_orth * L_orth + 
+                     alpha_ent * L_ent + 
+                     alpha_l2 * L2_reg)
+        
+        # Store loss components for debugging (attach to tensor)
+        if hasattr(self, 'training') and self.training:
+            self.last_loss_components = {
+                'L_w2v': L_w2v.item(),
+                'L_distill': L_distill.item(),
+                'L_orth': L_orth.item(),
+                'L_ent': L_ent.item(),
+                'L2_reg': L2_reg.item()
+            }
 
         return total_loss
