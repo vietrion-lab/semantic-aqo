@@ -1,7 +1,7 @@
 training:
-  learning_rate: 0.003
-  batch_size: 4
-  window_size: 5
+  learning_rate: 0.006
+  batch_size: 32
+  window_size: 7
   embedding_dim: 150
   distill_dim: 768
   num_senses: 3
