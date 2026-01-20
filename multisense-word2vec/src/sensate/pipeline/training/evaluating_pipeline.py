@@ -83,9 +83,9 @@ class Evaluator(nn.Module):
         else:
             df = self.ub_df
 
-        # Use cached preprocessing results (silent mode - no progress bars)
+        # Use cached preprocessing results
         if self._preprocessed_cache[target] is None:
-            self._preprocessed_cache[target] = self.pipeline(df['query'].tolist(), verbose=False)
+            self._preprocessed_cache[target] = self.pipeline(df['query'].tolist())
         queries = self._preprocessed_cache[target]
         
         query_embeddings = []
