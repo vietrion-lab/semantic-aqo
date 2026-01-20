@@ -54,19 +54,28 @@ class Trainer:
             ipca=None
         )
         
-        # Use only a sample for fitting IPCA
-        sample_size = min(100, len(preprocessed_data))
+        # Use sample for fitting IPCA
+        sample_size = min(50, len(preprocessed_data))
         sample_data = preprocessed_data[:sample_size]
         
         _, _, sample_embedding_table, _ = temp_generator(corpus=sample_data)
         
-        # Extract embeddings and fit IPCA
-        sample_embeddings = np.array(sample_embedding_table['embedding'].tolist())
-        print(f"   Sample size: {len(sample_embeddings)} embeddings")
+        # Extract embeddings and fit IPCA incrementally to avoid OOM
+        print(f"   Sample queries: {sample_size}")
         print(f"   Fitting IPCA: 768 -> {self.config.training.embedding_dim} dimensions")
         
-        ipca = IncrementalPCA(n_components=self.config.training.embedding_dim, batch_size=min(1000, len(sample_embeddings)))
-        ipca.fit(sample_embeddings)
+        ipca = IncrementalPCA(n_components=self.config.training.embedding_dim, batch_size=256)
+        
+        # Fit incrementally in batches
+        batch_size = 512
+        total_embeddings = len(sample_embedding_table)
+        print(f"   Total sample embeddings: {total_embeddings}")
+        
+        for i in range(0, total_embeddings, batch_size):
+            batch_df = sample_embedding_table.iloc[i:i+batch_size]
+            batch_embeddings = np.array(batch_df['embedding'].tolist())
+            ipca.partial_fit(batch_embeddings)
+            print(f"   Fitted batch {i//batch_size + 1}/{(total_embeddings + batch_size - 1)//batch_size}")
         print(f"   ✓ IPCA fitted on sample")
         
         return ipca
