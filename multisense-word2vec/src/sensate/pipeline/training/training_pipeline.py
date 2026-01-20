@@ -312,7 +312,7 @@ class Trainer:
         
         # Learning rate scheduler - Reduce on plateau for adaptive learning
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            opt, mode='max', factor=0.5, patience=2, min_lr=1e-6, verbose=True
+            opt, mode='max', factor=0.5, patience=2, min_lr=1e-6
         )
 
         self.model, optimizer, dataloader = acce.prepare(self.model, opt, dataloader)
