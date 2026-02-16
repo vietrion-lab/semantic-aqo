@@ -2,14 +2,17 @@
 
 #include "postgres.h"
 #include "utils/palloc.h"
-
-#include <stdlib.h>
-#include <math.h>
+//
+// #include <stdlib.h>
+// #include <math.h>
 
 #define IDX_U(j,d,D)              ((size_t)(j) * (size_t)(D) + (size_t)(d))
 #define IDX_KM(k,m,M)             ((size_t)(k) * (size_t)(M) + (size_t)(m))
 #define IDX_JKD(j,k,d,K,D)        (((size_t)(j) * (size_t)(K) * (size_t)(D)) + ((size_t)(k) * (size_t)(D)) + (size_t)(d))
 #define IDX_KD(k,d,D)             ((size_t)(k) * (size_t)(D) + (size_t)(d))
+
+#define DEFAULT_SIGMA 3.0f
+
 
 static int validate_input(const AttentionInput *in) {
     if (!in) return 0;
@@ -19,11 +22,14 @@ static int validate_input(const AttentionInput *in) {
     return 1;
 }
 
+
 static float distance_bias(int rel_pos, float sigma) {
-    if (sigma <= 0.0f) return 0.0f;
+    if (sigma <= 0.0f) sigma = DEFAULT_SIGMA;
+
     float x = (float)abs(rel_pos) / sigma;
     return -0.5f * x * x;
 }
+
 
 static int compute_context_average(const AttentionInput *in, AttentionOutput *out) {
     int K = in->num_senses;
@@ -42,6 +48,7 @@ static int compute_context_average(const AttentionInput *in, AttentionOutput *ou
     return 1;
 }
 
+
 static int compute_scores(const AttentionInput *in, AttentionOutput *out) {
     int K = in->num_senses;
     int D = in->dim;
@@ -53,6 +60,7 @@ static int compute_scores(const AttentionInput *in, AttentionOutput *out) {
     for (int k = 0; k < K; k++) {
         for (size_t j = 0; j < M; j++) {
             float dot = 0.0f;
+
             for (int d = 0; d < D; d++) {
                 float q = in->center_senses[IDX_KD(k, d, D)];
                 float u = out->u[IDX_U(j, d, D)];
@@ -65,8 +73,10 @@ static int compute_scores(const AttentionInput *in, AttentionOutput *out) {
             out->scores[IDX_KM(k, j, M)] = (dot / scale) + b;
         }
     }
+
     return 1;
 }
+
 
 static int softmax_rows(AttentionOutput *out) {
     int K = out->num_senses;
@@ -74,6 +84,7 @@ static int softmax_rows(AttentionOutput *out) {
 
     for (int k = 0; k < K; k++) {
         float maxv = out->scores[IDX_KM(k, 0, M)];
+
         for (size_t j = 1; j < M; j++) {
             float v = out->scores[IDX_KM(k, j, M)];
             if (v > maxv) maxv = v;
@@ -156,6 +167,7 @@ AttentionOutput *attention_forward(const AttentionInput *in) {
     return out;
 }
 
+
 void attention_free_output(AttentionOutput *out) {
     if (!out) return;
 
@@ -187,8 +199,10 @@ AttentionResult *attention_run(const AttentionInput *in) {
     return res;
 }
 
+
 void attention_free_result(AttentionResult *res) {
     if (!res) return;
+
     attention_free_output(res->out);
 
     pfree(res);

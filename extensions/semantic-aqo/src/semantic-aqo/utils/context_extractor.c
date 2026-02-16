@@ -1,7 +1,7 @@
 #include "context_extractor.h"
 
-// #include "postgres.h"
-// #include "utils/palloc.h"
+#include "postgres.h"
+#include "utils/palloc.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -14,18 +14,18 @@ Vocab* create_vocab(void) {
     Vocab *v = (Vocab*) malloc(sizeof(Vocab));
     if (!v) return NULL;
 
-    // v->tokens = (char**) palloc(INITIAL_CAPACITY * sizeof(char*));
-    // v->ids = (int*) palloc(INITIAL_CAPACITY * sizeof(int));
-    v->tokens = (char**) malloc(INITIAL_CAPACITY * sizeof(char*));
-    v->ids = (int*) malloc(INITIAL_CAPACITY * sizeof(int));
+    v->tokens = (char**) palloc(INITIAL_CAPACITY * sizeof(char*));
+    v->ids = (int*) palloc(INITIAL_CAPACITY * sizeof(int));
+    // v->tokens = (char**) malloc(INITIAL_CAPACITY * sizeof(char*));
+    // v->ids = (int*) malloc(INITIAL_CAPACITY * sizeof(int));
 
     if (!v->tokens || !v->ids) {
-        // if (v->tokens) pfree(v->tokens);
-        // if (v->ids) pfree(v->ids);
-        // pfree(v);
-        if (v->tokens) free(v->tokens);
-        if (v->ids) free(v->ids);
-        free(v);
+        if (v->tokens) pfree(v->tokens);
+        if (v->ids) pfree(v->ids);
+        pfree(v);
+        // if (v->tokens) free(v->tokens);
+        // if (v->ids) free(v->ids);
+        // free(v);
         return NULL;
     }
 
@@ -50,11 +50,11 @@ int get_or_add_token_id(Vocab *v, const char *token) {
     if (v->count >= v->capacity) {
         size_t new_cap = v->capacity * 2;
 
-        // char **new_tokens = (char**) repalloc(v->tokens, sizeof(char*) * new_cap);
-        // int *new_ids = (int*) repalloc(v->ids, sizeof(int) * new_cap);
+        char **new_tokens = (char**) repalloc(v->tokens, sizeof(char*) * new_cap);
+        int *new_ids = (int*) repalloc(v->ids, sizeof(int) * new_cap);
 
-        char **new_tokens = (char**) realloc(v->tokens, sizeof(char*) * new_cap);
-        int *new_ids = (int*) realloc(v->ids, sizeof(int) * new_cap);
+        // char **new_tokens = (char**) realloc(v->tokens, sizeof(char*) * new_cap);
+        // int *new_ids = (int*) realloc(v->ids, sizeof(int) * new_cap);
 
         if (!new_tokens || !new_ids) return -1;
 
@@ -65,8 +65,8 @@ int get_or_add_token_id(Vocab *v, const char *token) {
 
     int new_id = (int)v->count + 1;
 
-    // v->tokens[v->count] = pstrdup(token);
-    v->tokens[v->count] = strdup(token);
+    v->tokens[v->count] = pstrdup(token);
+    // v->tokens[v->count] = strdup(token);
     if (!v->tokens[v->count]) return -1;
 
     v->ids[v->count] = new_id;
@@ -79,27 +79,27 @@ void free_vocab(Vocab *v) {
     if (!v) return;
 
     for (size_t i = 0; i < v->count; i++) {
-        // pfree(v->tokens[i]);
-        free(v->tokens[i]);
+        pfree(v->tokens[i]);
+        // free(v->tokens[i]);
     }
 
-    // pfree(v->tokens);
-    // pfree(v->ids);
-    // pfree(v);
-    free(v->tokens);
-    free(v->ids);
-    free(v);
+    pfree(v->tokens);
+    pfree(v->ids);
+    pfree(v);
+    // free(v->tokens);
+    // free(v->ids);
+    // free(v);
 }
 
 IdSequence* tokens_to_ids(char **tokens, size_t token_count, Vocab *vocab) {
     if (!tokens || !vocab) return NULL;
 
-    // IdSequence *seq = (IdSequence*) palloc(sizeof(IdSequence));
-    IdSequence *seq = (IdSequence*) malloc(sizeof(IdSequence));
+    IdSequence *seq = (IdSequence*) palloc(sizeof(IdSequence));
+    // IdSequence *seq = (IdSequence*) malloc(sizeof(IdSequence));
     if (!seq) return NULL;
 
-    // seq->data = (int*) palloc(sizeof(int) * token_count);
-    seq->data = (int*) malloc(sizeof(int) * token_count);
+    seq->data = (int*) palloc(sizeof(int) * token_count);
+    // seq->data = (int*) malloc(sizeof(int) * token_count);
     if (!seq->data) {
         // pfree(seq);
         free(seq);
@@ -111,10 +111,10 @@ IdSequence* tokens_to_ids(char **tokens, size_t token_count, Vocab *vocab) {
     for (size_t i = 0; i < token_count; i++) {
         int id = get_or_add_token_id(vocab, tokens[i]);
         if (id < 0) {
-            // pfree(seq->data);
-            // pfree(seq);
-            free(seq->data);
-            free(seq);
+            pfree(seq->data);
+            pfree(seq);
+            // free(seq->data);
+            // free(seq);
             return NULL;
         }
         seq->data[i] = id;
@@ -126,24 +126,24 @@ IdSequence* tokens_to_ids(char **tokens, size_t token_count, Vocab *vocab) {
 void free_id_sequence(IdSequence *seq) {
     if (!seq) return;
 
-    // pfree(seq->data);
-    // pfree(seq);
-    free(seq->data);
-    free(seq);
+    pfree(seq->data);
+    pfree(seq);
+    // free(seq->data);
+    // free(seq);
 }
 
 TrainingPairArray* extract_training_pairs(IdSequence *seq, int window) {
     if (!seq || window <= 0) return NULL;
 
-    // TrainingPairArray *arr = (TrainingPairArray*) palloc(sizeof(TrainingPairArray));
-    TrainingPairArray *arr = (TrainingPairArray*) malloc(sizeof(TrainingPairArray));
+    TrainingPairArray *arr = (TrainingPairArray*) palloc(sizeof(TrainingPairArray));
+    // TrainingPairArray *arr = (TrainingPairArray*) malloc(sizeof(TrainingPairArray));
     if (!arr) return NULL;
 
-    // arr->pairs = (TrainingPair*) palloc0(sizeof(TrainingPair) * seq->count);
-    arr->pairs = (TrainingPair*) calloc(seq->count, sizeof(TrainingPair));
+    arr->pairs = (TrainingPair*) palloc0(sizeof(TrainingPair) * seq->count);
+    // arr->pairs = (TrainingPair*) calloc(seq->count, sizeof(TrainingPair));
     if (!arr->pairs) {
-        // pfree(arr);
-        free(arr);
+        pfree(arr);
+        // free(arr);
         return NULL;
     }
 
@@ -152,32 +152,32 @@ TrainingPairArray* extract_training_pairs(IdSequence *seq, int window) {
     for (size_t i = 0; i < seq->count; i++) {
         int max_ctx = window * 2;
 
-        // int *contexts = (int*) palloc(sizeof(int) * max_ctx);
-        // int *rel_pos = (int*) palloc(sizeof(int) * max_ctx);
-        int *contexts = (int*) malloc(sizeof(int) * (size_t)max_ctx);
-        int *rel_pos = (int*) malloc(sizeof(int) * (size_t)max_ctx);
+        int *contexts = (int*) palloc(sizeof(int) * max_ctx);
+        int *rel_pos = (int*) palloc(sizeof(int) * max_ctx);
+        // int *contexts = (int*) malloc(sizeof(int) * (size_t)max_ctx);
+        // int *rel_pos = (int*) malloc(sizeof(int) * (size_t)max_ctx);
 
         if (!contexts || !rel_pos) {
             if (contexts) {
-                // pfree(contexts);
-                free(contexts);
+                pfree(contexts);
+                // free(contexts);
             }
             if (rel_pos) {
-                // pfree(rel_pos);
-                free(rel_pos);
+                pfree(rel_pos);
+                // free(rel_pos);
             }
 
             for (size_t t = 0; t < i; t++) {
-                // pfree(arr->pairs[t].contexts);
-                // pfree(arr->pairs[t].rel_pos);
-                free(arr->pairs[t].contexts);
-                free(arr->pairs[t].rel_pos);
+                pfree(arr->pairs[t].contexts);
+                pfree(arr->pairs[t].rel_pos);
+                // free(arr->pairs[t].contexts);
+                // free(arr->pairs[t].rel_pos);
             }
 
-            // pfree(arr->pairs);
-            // pfree(arr);
-            free(arr->pairs);
-            free(arr);
+            pfree(arr->pairs);
+            pfree(arr);
+            // free(arr->pairs);
+            // free(arr);
             return NULL;
         }
 
@@ -209,16 +209,16 @@ void free_training_pairs(TrainingPairArray *arr) {
     if (!arr) return;
 
     for (size_t i = 0; i < arr->count; i++) {
-        // pfree(arr->pairs[i].contexts);
-        // pfree(arr->pairs[i].rel_pos);
-        free(arr->pairs[i].contexts);
-        free(arr->pairs[i].rel_pos);
+        pfree(arr->pairs[i].contexts);
+        pfree(arr->pairs[i].rel_pos);
+        // free(arr->pairs[i].contexts);
+        // free(arr->pairs[i].rel_pos);
     }
 
-    // pfree(arr->pairs);
-    // pfree(arr);
-    free(arr->pairs);
-    free(arr);
+    pfree(arr->pairs);
+    pfree(arr);
+    // free(arr->pairs);
+    // free(arr);
 }
 
 void print_training_pairs(TrainingPairArray *arr) {
