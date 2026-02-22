@@ -1,7 +1,0 @@
-{
-  "files.associations": {
-    "*.MD": "markdown",
-    "*.cpp": "cpp",
-    "builtins.h": "c"
-  }
-}
