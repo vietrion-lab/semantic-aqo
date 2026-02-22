@@ -1,0 +1,5 @@
+psycopg2-binary
+python-dotenv
+numpy
+faiss-cpu
+scipy

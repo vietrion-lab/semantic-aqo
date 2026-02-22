@@ -1,0 +1,9 @@
+{
+  "username": "postgres",
+  "password": "postgres",
+  "host": "localhost",
+  "port": 5432,
+  "db_name": "sense_db",
+  "batch_size": 10000,
+  "log": ""
+}

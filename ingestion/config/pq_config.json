@@ -1,0 +1,27 @@
+{
+  "m_subspaces": 10,
+  "n_centroids": 256,
+  "nbits": 8,
+  "train_size": 100000,
+
+  "raw_table_name": "sense_vectors_raw",
+  "codebook_table_name": "pq_codebook",
+  "quantization_table_name": "pq_quantization",
+
+  "raw_word_index_name": "idx_sense_raw_word",
+  "quantization_id_index_name": "idx_pq_quant_id",
+
+  "sense_embeddings_path": "./models/sense_embeddings.bin",
+  "vocab_path": "./models/vocab.bin",
+
+  "use_bytea": true,
+  "normalization": false,
+
+  "codebook_file": "",
+  "export_codebook": "codebook.pkl",
+
+  "post_verification_k": 50,
+  "final_k": 5,
+
+  "pipeline": true
+}
