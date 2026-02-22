@@ -17,7 +17,9 @@ typedef struct {
 
 typedef struct {
     int center;
+    int center_pos;
     int *contexts;
+    int *rel_pos;
     size_t context_count;
 } TrainingPair;
 
