@@ -1,47 +1,40 @@
-// src/semantic-aqo/model/gating_network.h
-
 #ifndef GATING_NETWORK_H
 #define GATING_NETWORK_H
 
-typedef struct {
-    double **attention_score;  // [num_context, num_senses] - attention weights
-    double **context_value;    // [num_context, embedding_dim] - averaged context vectors
-} GateInput;
-
 /**
  * Gating Network for multi-sense word disambiguation
- * 
- * Computes the best sense embedding for a center word given context.
- * 
- * @param gate_input: Input containing attention scores and context values
- * @param center_sense_embeddings: [num_senses][embedding_dim] - all sense embeddings for center word
+ * * Computes the best sense embedding for a center word given context.
+ * * @param attention_weights: [K, M] softmax attention weights from Attention
+ * @param context_u: [M, D] averaged context vectors from Attention
+ * @param center_senses: [K, D] all sense embeddings for center word
  * @param num_senses: Number of senses (K)
- * @param num_context: Number of context words (T-1)
+ * @param num_context: Number of context words (M)
  * @param embedding_dim: Dimension of embeddings (D)
- * @param output_embedding: Output buffer [embedding_dim] - the selected sense embedding
- * @param output_probs: Optional output buffer [num_senses] - gating probabilities (can be NULL)
+ * @param output_embedding: Output buffer [D] - the selected sense embedding
+ * @param output_probs: Optional output buffer [K] - gating probabilities (can be NULL)
  * @return: Index of the selected sense
  */
 int gating_network(
-    const GateInput *gate_input,
-    const double **center_sense_embeddings,
+    const float *attention_weights,
+    const float *context_u,
+    const float *center_senses,
     int num_senses,
     int num_context,
     int embedding_dim,
-    double *output_embedding,
-    double *output_probs
+    float *output_embedding,
+    float *output_probs
 );
 
 /**
  * Alternative version that returns the maximum gating score
- * 
- * @return: The maximum score among all senses
  */
-double gating_network_max_score(
-    const GateInput *gate_input,
-    const double **center_sense_embeddings,
+float gating_network_max_score(
+    const float *attention_weights,
+    const float *context_u,
+    const float *center_senses,
     int num_senses,
     int num_context,
     int embedding_dim
 );
+
 #endif /* GATING_NETWORK_H */
