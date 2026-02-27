@@ -1,7 +1,6 @@
-#include "postgres.h"
 #include "sql_preprocessor.h"
-#include "utils/palloc.h"
 #include <ctype.h>
+#include "pg_compat.h"
 
 #define INITIAL_ARRAY_CAPACITY 32
 

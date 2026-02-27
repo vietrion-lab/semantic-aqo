@@ -1,10 +1,8 @@
 #include "attention.h"
+#include "utils/pg_compat.h"
 
-#include "postgres.h"
-#include "utils/palloc.h"
-//
-// #include <stdlib.h>
-// #include <math.h>
+#include <math.h>
+#include <stdlib.h>
 
 #define IDX_U(j,d,D)              ((size_t)(j) * (size_t)(D) + (size_t)(d))
 #define IDX_KM(k,m,M)             ((size_t)(k) * (size_t)(M) + (size_t)(m))
@@ -12,7 +10,6 @@
 #define IDX_KD(k,d,D)             ((size_t)(k) * (size_t)(D) + (size_t)(d))
 
 #define DEFAULT_SIGMA 3.0f
-
 
 static int validate_input(const AttentionInput *in) {
     if (!in) return 0;
@@ -22,14 +19,11 @@ static int validate_input(const AttentionInput *in) {
     return 1;
 }
 
-
 static float distance_bias(int rel_pos, float sigma) {
     if (sigma <= 0.0f) sigma = DEFAULT_SIGMA;
-
     float x = (float)abs(rel_pos) / sigma;
     return -0.5f * x * x;
 }
-
 
 static int compute_context_average(const AttentionInput *in, AttentionOutput *out) {
     int K = in->num_senses;
@@ -48,7 +42,6 @@ static int compute_context_average(const AttentionInput *in, AttentionOutput *ou
     return 1;
 }
 
-
 static int compute_scores(const AttentionInput *in, AttentionOutput *out) {
     int K = in->num_senses;
     int D = in->dim;
@@ -60,7 +53,6 @@ static int compute_scores(const AttentionInput *in, AttentionOutput *out) {
     for (int k = 0; k < K; k++) {
         for (size_t j = 0; j < M; j++) {
             float dot = 0.0f;
-
             for (int d = 0; d < D; d++) {
                 float q = in->center_senses[IDX_KD(k, d, D)];
                 float u = out->u[IDX_U(j, d, D)];
@@ -73,10 +65,8 @@ static int compute_scores(const AttentionInput *in, AttentionOutput *out) {
             out->scores[IDX_KM(k, j, M)] = (dot / scale) + b;
         }
     }
-
     return 1;
 }
-
 
 static int softmax_rows(AttentionOutput *out) {
     int K = out->num_senses;
@@ -130,7 +120,6 @@ AttentionOutput *attention_forward(const AttentionInput *in) {
     if (!validate_input(in)) return NULL;
 
     AttentionOutput *out = (AttentionOutput*) palloc(sizeof(AttentionOutput));
-    // AttentionOutput *out = (AttentionOutput*) calloc(1, sizeof(AttentionOutput));
     if (!out) return NULL;
 
     int K = in->num_senses;
@@ -145,11 +134,6 @@ AttentionOutput *attention_forward(const AttentionInput *in) {
     out->scores = (float*) palloc0(sizeof(float) * K * M);
     out->weights = (float*) palloc0(sizeof(float) * K * M);
     out->sense_context = (float*) palloc0(sizeof(float) * K * D);
-
-    // out->u = (float*) calloc(M * (size_t)D, sizeof(float));
-    // out->scores = (float*) calloc((size_t)K * M, sizeof(float));
-    // out->weights = (float*) calloc((size_t)K * M, sizeof(float));
-    // out->sense_context = (float*) calloc((size_t)K * (size_t)D, sizeof(float));
 
     if (!out->u || !out->scores || !out->weights || !out->sense_context) {
         attention_free_output(out);
@@ -167,28 +151,20 @@ AttentionOutput *attention_forward(const AttentionInput *in) {
     return out;
 }
 
-
 void attention_free_output(AttentionOutput *out) {
     if (!out) return;
-
     pfree(out->u);
     pfree(out->scores);
     pfree(out->weights);
     pfree(out->sense_context);
     pfree(out);
-
-    // free(out->u);
-    // free(out->scores);
-    // free(out->weights);
-    // free(out->sense_context);
-    // free(out);
 }
+
 AttentionResult *attention_run(const AttentionInput *in) {
     AttentionOutput *out = attention_forward(in);
     if (!out) return NULL;
 
     AttentionResult *res = (AttentionResult*) palloc(sizeof(AttentionResult));
-    // AttentionResult *res = (AttentionResult*) malloc(sizeof(AttentionResult));
     if (!res) {
         attention_free_output(out);
         return NULL;
@@ -199,12 +175,8 @@ AttentionResult *attention_run(const AttentionInput *in) {
     return res;
 }
 
-
 void attention_free_result(AttentionResult *res) {
     if (!res) return;
-
     attention_free_output(res->out);
-
     pfree(res);
-    // free(res);
 }
