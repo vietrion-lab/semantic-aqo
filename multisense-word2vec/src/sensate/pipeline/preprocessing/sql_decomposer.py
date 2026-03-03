@@ -10,7 +10,7 @@ JOIN_PATTERN = re.compile(
 )
 
 WHERE_PATTERN = re.compile(
-    r"WHERE\s+(.*?);?$",
+    r"WHERE\s+(.*?)(?=GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|$)",
     re.DOTALL,
 )
 
@@ -106,13 +106,12 @@ def process_sql_batch_parallel(sql_list, workers=None):
 if __name__ == "__main__":
 
     query_original = """
-    SELECT *
-    FROM users
-    JOIN messages
-      ON users.id = messages.sender_id
-    JOIN friends
-      ON users.id = friends.first_id
-     AND messages.receiver_id = friends.second_id
+    SELECT u.name, SUM(o.amount) AS total
+    FROM users u
+    JOIN orders o ON o.user_id = u.id
+    WHERE u.age >= 21 AND o.status IN ('paid','shipped')
+    GROUP BY u.name
+    ORDER BY total DESC
     """
 
     query_extended = """
