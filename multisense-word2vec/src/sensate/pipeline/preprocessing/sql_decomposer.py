@@ -17,64 +17,150 @@ WHERE_PATTERN = re.compile(
 AND_SPLIT = re.compile(r"\s+AND\s+")
 
 TABLE_ALIAS_PATTERN = re.compile(
-    r"(FROM|JOIN)\s+(\w+)(?:\s+(\w+))?",
+    r"(FROM|JOIN)\s+(\w+)(?:\s+AS)?\s+(\w+)?",
     re.IGNORECASE,
 )
+def safe_and_split(condition_str):
+    parts = []
+    current = []
+    depth = 0
+    i = 0
+    length = len(condition_str)
 
+    while i < length:
+        if condition_str[i] == "(":
+            depth += 1
+        elif condition_str[i] == ")":
+            depth -= 1
+
+        if depth == 0 and condition_str[i:i+3] == "AND":
+            parts.append("".join(current).strip())
+            current = []
+            i += 3
+            continue
+
+        current.append(condition_str[i])
+        i += 1
+
+    if current:
+        parts.append("".join(current).strip())
+
+    return parts
+def contains_subquery(cond: str):
+    return re.search(r"\(\s*SELECT", cond, re.IGNORECASE)
+
+FROM_CLAUSE_PATTERN = re.compile(
+    r"\bFROM\b\s+(.*?)(?=\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+def safe_comma_split(s: str):
+    parts, cur, depth = [], [], 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            part = "".join(cur).strip()
+            if part:
+                parts.append(part)
+            cur = []
+        else:
+            cur.append(ch)
+    last = "".join(cur).strip()
+    if last:
+        parts.append(last)
+    return parts
+
+def parse_table_alias(fragment: str):
+    fragment = fragment.strip()
+    fragment = re.sub(r"\s+", " ", fragment)
+    m = re.match(r"^(\w+(?:\.\w+)?)(?:\s+(?:AS\s+)?(\w+))?$", fragment, re.IGNORECASE)
+    if not m:
+        return None, None
+    table = m.group(1)
+    alias = m.group(2)
+    return table, alias
 
 def extract_alias_mapping(sql: str):
     mapping = {}
-    matches = TABLE_ALIAS_PATTERN.findall(sql)
 
-    for _, table, alias in matches:
-        table = table.upper()
+    m = FROM_CLAUSE_PATTERN.search(sql)
+    if m:
+        from_body = m.group(1)
+        for frag in safe_comma_split(from_body):
+            table, alias = parse_table_alias(frag)
+            if not table:
+                continue
+            table_u = table.upper().split(".")[-1]  # nếu có schema thì lấy tên bảng
+            mapping[table_u] = table_u
+            if alias:
+                mapping[alias.upper()] = table_u
+
+    for _, table, alias in TABLE_ALIAS_PATTERN.findall(sql):
+        table_u = table.upper()
+        mapping[table_u] = table_u
         if alias:
-            mapping[alias.upper()] = table
-        mapping[table] = table  # self map
+            mapping[alias.upper()] = table_u
 
     return mapping
-
 
 def replace_alias_with_table(condition: str, alias_map: dict):
     for alias, table in alias_map.items():
         condition = re.sub(rf"\b{alias}\.", f"{table}.", condition)
     return condition
 
+def is_join_condition(cond: str):
+    m = re.match(r"(\w+\.\w+)\s*=\s*(\w+\.\w+)", cond)
+    if not m:
+        return False
+
+    left_table = m.group(1).split(".")[0]
+    right_table = m.group(2).split(".")[0]
+
+    return left_table != right_table
+
 
 def decompose_operators_fast(sql: str):
+
     sql = sql.upper()
 
     alias_map = extract_alias_mapping(sql)
 
-    # JOIN operators (root first)
-    join_ops = JOIN_PATTERN.findall(sql)
-    join_ops = [j.strip() for j in reversed(join_ops)]
+    join_ops = []
+    filter_ops = []
 
-    join_ops = [
+    explicit_join = JOIN_PATTERN.findall(sql)
+    explicit_join = [j.strip() for j in reversed(explicit_join)]
+    explicit_join = [
         replace_alias_with_table(op, alias_map)
-        for op in join_ops
+        for op in explicit_join
     ]
 
-    # WHERE operators
-    where_ops = []
+    join_ops.extend(explicit_join)
     m = WHERE_PATTERN.search(sql)
     if m:
         conditions = m.group(1)
-        parts = AND_SPLIT.split(conditions)
+        parts = safe_and_split(conditions)
 
-        per_table = {}
         for cond in parts:
             cond = cond.strip()
             cond = replace_alias_with_table(cond, alias_map)
 
-            table = cond.split(".")[0]
-            per_table.setdefault(table, []).append(cond)
+            if contains_subquery(cond):
+                subqueries = re.findall(r"\((\s*SELECT.*?\))", cond, re.DOTALL)
+                for sq in subqueries:
+                    join_ops.extend(decompose_operators_fast(sq))
+                filter_ops.append(cond)
+                continue
 
-        for v in per_table.values():
-            where_ops.append(" AND ".join(v))
+            if is_join_condition(cond):
+                join_ops.append(cond)
+            else:
+                filter_ops.append(cond)
 
-    return join_ops + where_ops
-
+    return join_ops + filter_ops
 
 
 def operator_hash(op: str):
@@ -115,26 +201,8 @@ if __name__ == "__main__":
     """
 
     query_extended = """
-    SELECT *
-    FROM users
-    JOIN messages
-      ON users.id = messages.sender_id
-    JOIN friends
-      ON users.id = friends.first_id
-     AND messages.receiver_id = friends.second_id
-    JOIN groups
-      ON friends.group_id = groups.id
-    JOIN posts
-      ON users.id = posts.user_id
-    JOIN comments
-      ON posts.id = comments.post_id
-    WHERE users.age > 25
-      AND users.id > 1000
-      AND messages.created_at >= '2024-01-01'
-      AND friends.status = 'ACTIVE'
-      AND groups.type = 'PRIVATE'
-      AND posts.created_at >= '2023-01-01'
-      AND comments.is_deleted = false
+        SELECT MAX(mc.note) AS production_note, MAX(t.title) AS movie_title, MAX(t.production_year) AS movie_year FROM company_type AS ct, info_type AS it, movie_companies AS mc, movie_info_idx AS mi_idx, title AS t WHERE t.id = mc.movie_id AND t.id = mi_idx.movie_id AND ct.id = mc.company_type_id AND it.info = 'top 250 rank' AND (mc.note LIKE '%(co-production)%' OR mc.note LIKE '%(presents)%') AND ct.kind = 'production companies' AND it.id = mi_idx.info_type_id AND mc.movie_id = mi_idx.movie_id AND mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'
+
     """
 
     batch = [query_original, query_extended]
