@@ -5,7 +5,7 @@ import os
 
 
 JOIN_PATTERN = re.compile(
-    r"JOIN\s+\w+\s+ON\s+(.*?)(?=JOIN|WHERE|$)",
+    r"JOIN\s+\w+(?:\s+\w+)?\s+ON\s+(.*?)(?=JOIN|WHERE|$)",
     re.DOTALL,
 )
 
@@ -16,16 +16,46 @@ WHERE_PATTERN = re.compile(
 
 AND_SPLIT = re.compile(r"\s+AND\s+")
 
+TABLE_ALIAS_PATTERN = re.compile(
+    r"(FROM|JOIN)\s+(\w+)(?:\s+(\w+))?",
+    re.IGNORECASE,
+)
+
+
+def extract_alias_mapping(sql: str):
+    mapping = {}
+    matches = TABLE_ALIAS_PATTERN.findall(sql)
+
+    for _, table, alias in matches:
+        table = table.upper()
+        if alias:
+            mapping[alias.upper()] = table
+        mapping[table] = table  # self map
+
+    return mapping
+
+
+def replace_alias_with_table(condition: str, alias_map: dict):
+    for alias, table in alias_map.items():
+        condition = re.sub(rf"\b{alias}\.", f"{table}.", condition)
+    return condition
 
 
 def decompose_operators_fast(sql: str):
     sql = sql.upper()
 
+    alias_map = extract_alias_mapping(sql)
+
     # JOIN operators (root first)
     join_ops = JOIN_PATTERN.findall(sql)
     join_ops = [j.strip() for j in reversed(join_ops)]
 
-    # WHERE operators (pushdown per table)
+    join_ops = [
+        replace_alias_with_table(op, alias_map)
+        for op in join_ops
+    ]
+
+    # WHERE operators
     where_ops = []
     m = WHERE_PATTERN.search(sql)
     if m:
@@ -35,6 +65,8 @@ def decompose_operators_fast(sql: str):
         per_table = {}
         for cond in parts:
             cond = cond.strip()
+            cond = replace_alias_with_table(cond, alias_map)
+
             table = cond.split(".")[0]
             per_table.setdefault(table, []).append(cond)
 
