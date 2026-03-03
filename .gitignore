@@ -18,3 +18,4 @@ output/model
 .bin
 
 checkpoints/
+cache

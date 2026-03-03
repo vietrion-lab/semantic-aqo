@@ -1,151 +1,128 @@
-import torch.nn as nn
-import torch
-import torch.nn.functional as F
-import math
+import numpy as np
 import pandas as pd
 import os
-from sklearn.cluster import KMeans
-from tqdm import tqdm
 from sklearn.metrics import classification_report
 
 from sensate.pipeline.preprocessing.preprocessing_pipeline import PreprocessingPipeline
 
-class Evaluator(nn.Module):
+
+class Evaluator:
     """
-    Evaluator Module to compute similarity scores between word embeddings.
+    Extrinsic evaluator using ground-truth labelled SQL query benchmarks.
+
+    For each dataset (Bombay / GooglePlus / UB):
+      1. Embed each query via SIF-weighted token embeddings
+      2. Remove first principal component (common discourse vector)
+      3. L2-normalise
+      4. Leave-one-out kNN (k=5, cosine similarity) → predicted label
+      5. Compare with ground-truth labels → macro F1
     """
+
+    SIF_A = 1e-3
+    K = 5
+
     def __init__(self, evaluation_datasets_path='../evaluation_datasets'):
-        super(Evaluator, self).__init__()
-        # Use absolute path or allow configuration
-        self.bombay_df = pd.read_csv(os.path.join(evaluation_datasets_path, 'bombay_queries.csv'), sep='\t')
+        self.bombay_df     = pd.read_csv(os.path.join(evaluation_datasets_path, 'bombay_queries.csv'),     sep='\t')
         self.googleplus_df = pd.read_csv(os.path.join(evaluation_datasets_path, 'googleplus_queries.csv'), sep='\t')
-        self.ub_df = pd.read_csv(os.path.join(evaluation_datasets_path, 'ub_queries.csv'), sep='\t')
-        print(f"📊 Loaded {len(self.bombay_df)} Bombay, {len(self.googleplus_df)} GooglePlus, {len(self.ub_df)} UB queries")
+        self.ub_df         = pd.read_csv(os.path.join(evaluation_datasets_path, 'ub_queries.csv'),         sep='\t')
+        print(f"📊 Loaded {len(self.bombay_df)} Bombay, "
+              f"{len(self.googleplus_df)} GooglePlus, "
+              f"{len(self.ub_df)} UB queries")
         self.pipeline = PreprocessingPipeline()
-        
-        # Cache preprocessed queries to avoid reprocessing every evaluation
-        self._preprocessed_cache = {
-            'bombay': None,
-            'googleplus': None,
-            'ub': None
-        }
+        self._cache = {'bombay': None, 'googleplus': None, 'ub': None}
 
-    def _gating_network_inference(self, center_id: int, center_pos: int, query_ids: list, embedding_table: torch.Tensor, sigma: float = 0.001):
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _remove_first_pc(X: np.ndarray) -> np.ndarray:
+        X_centered = X - X.mean(axis=0)
+        _, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
+        pc = Vt[0]
+        return X - np.outer(X.dot(pc), pc)
+
+    # ------------------------------------------------------------------ #
+    def _infer(self, target: str, embedding_matrix: np.ndarray,
+               vocab_dict: dict, word_freq: dict):
+        """SIF embed + PC remove + L2 norm. Returns (X [N, D], valid_idx)."""
+        df_map = {'bombay': self.bombay_df, 'googleplus': self.googleplus_df, 'ub': self.ub_df}
+        df = df_map[target]
+
+        if self._cache[target] is None:
+            self._cache[target] = [
+                self.pipeline.tokenize(q).split() for q in df['query'].tolist()
+            ]
+        token_lists = self._cache[target]
+
+        a = self.SIF_A
+        raw_embs, valid_idx = [], []
+        for i, tokens in enumerate(token_lists):
+            embs, weights = [], []
+            for tok in tokens:
+                if tok in vocab_dict:
+                    embs.append(embedding_matrix[vocab_dict[tok]])
+                    pw = word_freq.get(tok, 1e-8) if word_freq else 1.0
+                    weights.append(a / (a + pw))
+            if embs:
+                w = np.array(weights, dtype=np.float32)
+                raw_embs.append(np.average(embs, axis=0, weights=w))
+                valid_idx.append(i)
+
+        if not raw_embs:
+            return np.zeros((0, embedding_matrix.shape[1]), dtype=np.float32), []
+
+        X = np.stack(raw_embs).astype(np.float32)
+        if X.shape[0] > 1:
+            X = self._remove_first_pc(X)
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        X = X / np.clip(norms, 1e-8, None)
+        return X, valid_idx
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _knn_loo_predict(X: np.ndarray, labels: np.ndarray, k: int = 5) -> np.ndarray:
+        """LOO kNN majority-vote using cosine similarity (X already L2-normed)."""
+        unique_labels, encoded = np.unique(labels, return_inverse=True)
+        sim = X @ X.T
+        np.fill_diagonal(sim, -np.inf)
+        k = min(k, X.shape[0] - 1)
+        top_k = np.argpartition(sim, -k, axis=1)[:, -k:]
+        preds = []
+        for neighbors in top_k:
+            counts = np.bincount(encoded[neighbors], minlength=len(unique_labels))
+            preds.append(unique_labels[int(np.argmax(counts))])
+        return np.array(preds)
+
+    # ------------------------------------------------------------------ #
+    def __call__(self, embedding_matrix: np.ndarray, vocab_dict: dict,
+                 word_freq: dict = None) -> dict:
         """
-        Perform gating network inference to get sense-aware embedding for center word.
-        Matches the logic in gating_network_layer.py
+        Evaluate on all three benchmarks.
+
+        Returns dict with keys:
+            bombay_f1, bombay_report,
+            googleplus_f1, googleplus_report,
+            ub_f1, ub_report
         """
-        device = embedding_table.device  # Get device from embedding_table
-        
-        # Get embeddings
-        center_sense_embeddings = embedding_table[center_id]  # [K, D]
-        
-        # Get context (exclude center position)
-        context_ids = [query_ids[i] for i in range(len(query_ids)) if i != center_pos]
-        context_sense_embeddings = embedding_table[context_ids]  # [T-1, K, D]
-        
-        num_senses = center_sense_embeddings.shape[0]
-        embedding_dim = center_sense_embeddings.shape[1]
-        
-        # Mean over sense dimension: [T-1, K, D] -> [T-1, D]
-        v = context_sense_embeddings.mean(dim=1)  # [T-1, D]
-        
-        # Attention scores: [K, D] @ [D, T-1] -> [K, T-1]
-        a = torch.matmul(center_sense_embeddings, v.T) / math.sqrt(embedding_dim)
-        a = a.T  # [T-1, K]
-        
-        # Positional weights - create on same device
-        context_positions = torch.tensor([i for i in range(len(query_ids)) if i != center_pos], 
-                                        dtype=torch.float32, device=device)
-        w = torch.exp(- torch.abs(context_positions - center_pos) / sigma)  # [T-1]
-        
-        # Weighted attention: [T-1, K] + [T-1, 1]
-        alpha = torch.softmax(a + w.unsqueeze(-1).log(), dim=0)  # [T-1, K]
-        
-        # Weighted context: [K, T-1] @ [T-1, D] -> [K, D]
-        weighted_context = torch.matmul(alpha.T, v)  # [K, D]
-        
-        # Cosine similarity between center senses and weighted context
-        s = F.cosine_similarity(center_sense_embeddings, weighted_context, dim=-1)  # [K]
-        q = torch.softmax(s, dim=-1)  # [K]
-        
-        # Select best sense
-        idx = q.argmax(dim=-1)
-        sense_aware_embedding = center_sense_embeddings[idx]  # [D]
+        results = {}
+        for target, df in [('bombay',     self.bombay_df),
+                            ('googleplus', self.googleplus_df),
+                            ('ub',         self.ub_df)]:
+            X, valid_idx = self._infer(target, embedding_matrix, vocab_dict, word_freq)
+            if X.shape[0] < 2:
+                results[f'{target}_f1']     = 0.0
+                results[f'{target}_report'] = ''
+                continue
 
-        return sense_aware_embedding
+            true   = df['label'].values[valid_idx]
+            pred   = self._knn_loo_predict(X, true, k=self.K)
+            report = classification_report(true, pred, zero_division=0)
 
-    def _infer(self, target: str, embedding_table: torch.Tensor, vocab_table: dict):
-        if target == 'bombay':
-            df = self.bombay_df
-        elif target == 'googleplus':
-            df = self.googleplus_df
-        else:
-            df = self.ub_df
+            macro_f1 = 0.0
+            for line in report.strip().split('\n'):
+                if 'macro avg' in line:
+                    macro_f1 = float(line.split()[-2])
+                    break
 
-        # Use cached preprocessing results
-        if self._preprocessed_cache[target] is None:
-            self._preprocessed_cache[target] = self.pipeline(df['query'].tolist())
-        queries = self._preprocessed_cache[target]
-        
-        query_embeddings = []
-        
-        # Disable progress bar for cleaner logs
-        for query in queries:
-            embeddings = []
-            
-            # Map positions: only include tokens that exist in vocab
-            valid_positions = []
-            valid_ids = []
-            for pos, token in enumerate(query):
-                if token in vocab_table:
-                    valid_positions.append(pos)
-                    valid_ids.append(vocab_table[token])
-            
-            # Process each valid token
-            for idx, (pos, token) in enumerate(zip(valid_positions, [query[p] for p in valid_positions])):
-                center_id = vocab_table[token]
-                
-                # Get sense-aware embedding for center word
-                # Use idx (position in valid_ids) instead of pos (position in original query)
-                embeddings.append(self._gating_network_inference(
-                    center_id,
-                    idx,  # Position in the filtered list
-                    valid_ids,  # Only IDs that exist in vocab
-                    embedding_table
-                ))
-            
-            # Average over all center words in the query
-            if len(embeddings) > 0:
-                query_emb = torch.stack(embeddings).mean(dim=0)
-                query_embeddings.append(query_emb)
+            results[f'{target}_f1']     = macro_f1
+            results[f'{target}_report'] = report
 
-        return query_embeddings
-
-    def forward(self, embedding_table: torch.Tensor, vocab_table: dict):
-        bombay_embeddings  = self._infer('bombay', embedding_table, vocab_table)
-        googleplus_embeddings = self._infer('googleplus', embedding_table, vocab_table)
-        ub_embeddings = self._infer('ub', embedding_table, vocab_table)
-
-        # Convert to numpy for KMeans
-        bombay_np = torch.stack(bombay_embeddings).cpu().numpy()
-        googleplus_np = torch.stack(googleplus_embeddings).cpu().numpy()
-        ub_np = torch.stack(ub_embeddings).cpu().numpy()
-
-        bombay_cluster = KMeans(n_clusters=14, random_state=0)
-        googleplus_cluster = KMeans(n_clusters=8, random_state=0)
-        ub_cluster = KMeans(n_clusters=2, random_state=0)
-
-        bombay_results = bombay_cluster.fit_predict(bombay_np)
-        googleplus_results = googleplus_cluster.fit_predict(googleplus_np)
-        ub_results = ub_cluster.fit_predict(ub_np)
-
-        bombay_report = classification_report(self.bombay_df['label'].values[:len(bombay_results)], bombay_results)
-        googleplus_report = classification_report(self.googleplus_df['label'].values[:len(googleplus_results)], googleplus_results)
-        ub_report = classification_report(self.ub_df['label'].values[:len(ub_results)], ub_results)
-
-        return {
-            'bombay_report': bombay_report,
-            'googleplus_report': googleplus_report,
-            'ub_report': ub_report
-        }
+        return results
