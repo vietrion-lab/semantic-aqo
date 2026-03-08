@@ -1,6 +1,26 @@
 import re
+import os
+from concurrent.futures import ProcessPoolExecutor
 from typing import List, Dict, Tuple, Optional
 from tqdm import tqdm
+from sensate.pipeline.preprocessing.sql_decomposer import decompose_operators_fast
+
+# ---------------------------------------------------------------------------
+# Module-level worker helpers  (must be top-level so they are picklable)
+# ---------------------------------------------------------------------------
+_pipeline_instance = None  # one instance per worker process
+
+
+def _worker_init():
+    """Initialise one PreprocessingPipeline per worker process."""
+    global _pipeline_instance
+    _pipeline_instance = PreprocessingPipeline()
+
+
+def _worker_process_sql(sql: str) -> List[List[str]]:
+    """Called inside each worker process; reuses the pre-created pipeline."""
+    global _pipeline_instance
+    return _pipeline_instance._sql_to_sentences(str(sql))
 
 
 class PreprocessingPipeline:
@@ -52,7 +72,12 @@ class PreprocessingPipeline:
         
         self.reset()
         query = sql.strip()
-        
+
+        # Step 0: Normalise PostgreSQL ARRAY[...] → (...) so numeric/string
+        # elements inside are handled by the regular tokenizer instead of
+        # being swallowed whole by the bracket-identifier pattern.
+        query = re.sub(r'\bARRAY\s*\[', '(', query, flags=re.IGNORECASE)
+
         # Step 1: Extract table aliases from the query FIRST (before any modifications)
         self._extract_table_aliases(query)
         
@@ -140,7 +165,7 @@ class PreprocessingPipeline:
             \d+\.?\d*|                # Numbers (int and decimal)
             <>|!=|<=|>=|              # Multi-char operators
             [a-zA-Z_#][\w]*|          # Identifiers (including # for temp tables)
-            \[[^\]]+\]|               # Bracketed identifiers [name]
+            \[[^\]'"]+\]|              # Bracketed identifiers [name] (no quotes inside)
             [(),;.=<>+\-*/]           # Single-char operators and punctuation
         """
         tokens = re.findall(pattern, query, re.VERBOSE | re.IGNORECASE)
@@ -149,6 +174,20 @@ class PreprocessingPipeline:
     def _process_tokens(self, tokens: List[str]) -> List[str]:
         """
         Process tokens and classify them as keywords, tables, columns, literals, etc.
+
+        Only the following tokens are masked (replaced with special tokens):
+          - <ALIAS_T(i)>  : table alias
+          - <COL_OUT>     : output alias from SELECT ... AS ...
+          - <NUM>         : numeric literal
+          - <STR>         : string literal
+          - <DATE>        : date literal ('YYYY-MM-DD')
+          - <TIMESTAMP>   : timestamp literal ('YYYY-MM-DD HH:MM:SS' / ISO 8601)
+          - <BOOL_TRUE>   : boolean TRUE literal
+          - <BOOL_FALSE>  : boolean FALSE literal
+          - <NULL>        : NULL literal
+
+        Everything else (table names, column names, keywords, operators, etc.)
+        is kept as-is.
         """
         result = []
         i = 0
@@ -167,17 +206,40 @@ class PreprocessingPipeline:
                 i += 1
                 continue
             
-            # Handle literals first
+            # Handle string literals -> <DATE>, <TIMESTAMP>, or <STR>
             if self._is_string_literal(token):
-                result.append('<STR>')
+                inner = token[1:-1]  # strip surrounding quotes
+                if self._is_timestamp(inner):
+                    result.append('<TIMESTAMP>')
+                elif self._is_date(inner):
+                    result.append('<DATE>')
+                else:
+                    result.append('<STR>')
                 i += 1
                 continue
             
+            # Handle numeric literals -> <NUM>
             if self._is_number(token):
                 result.append('<NUM>')
                 i += 1
                 continue
             
+            # Handle boolean / null literals before keyword check
+            if token_upper == 'TRUE':
+                result.append('<BOOL_TRUE>')
+                i += 1
+                continue
+
+            if token_upper == 'FALSE':
+                result.append('<BOOL_FALSE>')
+                i += 1
+                continue
+
+            if token_upper == 'NULL':
+                result.append('<NULL>')
+                i += 1
+                continue
+
             # Handle keywords
             if token_upper == 'SELECT':
                 result.append('SELECT')
@@ -217,7 +279,7 @@ class PreprocessingPipeline:
                 i += 1
                 continue
             
-            # Handle qualified column references: alias.column
+            # Handle qualified column references: alias.column  ->  <ALIAS_Ti>.column
             if i + 2 < len(tokens) and tokens[i + 1] == '.':
                 alias_or_schema = token.lower()
                 column = tokens[i + 2]
@@ -227,25 +289,24 @@ class PreprocessingPipeline:
                     alias_num = self.table_aliases[alias_or_schema]
                     result.append(f'<ALIAS_T{alias_num}>')
                     result.append('.')
-                    result.append('<COL>')
+                    result.append(column)  # keep actual column name
                     i += 3
                     after_as_in_select = False
                     after_as_in_from = False
                     continue
                 else:
-                    # Might be schema.table or schema.function - treat as column for now
-                    result.append('<COL>')
+                    # schema.table or schema.function - keep actual names
+                    result.append(token)
                     result.append('.')
-                    result.append('<COL>')
+                    result.append(column)
                     i += 3
                     after_as_in_select = False
                     after_as_in_from = False
                     continue
             
-            # Handle table names (after FROM or JOIN)
+            # Handle table names (after FROM or JOIN) - keep actual name
             if expect_table:
-                # This is a table name
-                result.append('<TAB>')
+                result.append(token)  # keep actual table name
                 expect_table = False
                 expect_table_alias = True
                 i += 1
@@ -271,9 +332,8 @@ class PreprocessingPipeline:
                     i += 1
                     continue
                 else:
-                    # Unknown identifier after table - shouldn't happen if aliases are extracted correctly
-                    # Treat as column
-                    result.append('<COL>')
+                    # Unknown identifier after table - keep as-is
+                    result.append(token)
                     expect_table_alias = False
                 i += 1
                 continue
@@ -297,24 +357,24 @@ class PreprocessingPipeline:
                     alias_num = self.table_aliases[token.lower()]
                     result.append(f'<ALIAS_T{alias_num}>')
                 else:
-                    result.append('<COL>')
+                    result.append(token)  # keep as-is
                 after_as_in_from = False
                 i += 1
                 continue
             
-            # Handle bracketed identifiers
+            # Handle bracketed identifiers - keep as-is (or <COL_OUT> when after AS)
             if token.startswith('[') and token.endswith(']'):
                 if after_as_in_select:
                     result.append('<COL_OUT>')
                     after_as_in_select = False
                 else:
-                    result.append('<COL>')
+                    inner_name = token[1:-1]  # strip [ and ]
+                    result.append(inner_name)
                 i += 1
                 continue
             
-            # Handle function calls
+            # Handle function calls - keep function name as-is
             if i + 1 < len(tokens) and tokens[i + 1] == '(':
-                # This is a function name
                 result.append(token_upper)
                 i += 1
                 continue
@@ -339,8 +399,8 @@ class PreprocessingPipeline:
                 i += 1
                 continue
             
-            # Everything else is a column
-            result.append('<COL>')
+            # Everything else (column names, identifiers) - keep as-is
+            result.append(token)
             i += 1
         
         return result
@@ -350,6 +410,17 @@ class PreprocessingPipeline:
         return (token.startswith("'") and token.endswith("'")) or \
                (token.startswith('"') and token.endswith('"'))
     
+    def _is_date(self, s: str) -> bool:
+        """Check if string matches a date pattern: YYYY-MM-DD."""
+        return bool(re.match(r'^\d{4}-\d{2}-\d{2}$', s.strip()))
+
+    def _is_timestamp(self, s: str) -> bool:
+        """Check if string matches a timestamp pattern: YYYY-MM-DD HH:MM[:SS[.fff]]."""
+        return bool(re.match(
+            r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?',
+            s.strip()
+        ))
+
     def _is_number(self, token: str) -> bool:
         """Check if token is a number."""
         try:
@@ -358,28 +429,86 @@ class PreprocessingPipeline:
         except ValueError:
             return False
     
-    def __call__(self, query_or_batch):
+    def _sql_to_sentences(self, sql: str) -> List[List[str]]:
+        """
+        Decompose one SQL into sub-operator fragments (plan-tree nodes),
+        each tokenized as a separate training sentence.
+        If no fragments are found, the SQL is discarded entirely.
+        """
+        fragments = decompose_operators_fast(sql)
+        if not fragments:
+            return []
+
+        sentences = []
+        for frag in fragments:
+            tokens = self.tokenize(frag).split()
+            if tokens:
+                sentences.append(tokens)
+        return sentences
+
+    def __call__(self, query_or_batch, num_workers: int = 1):
         """
         Process a single query or a batch of queries.
-        
+        Each SQL is decomposed into sub-operator fragments via sql_decomposer
+        so that Word2Vec learns the semantics of individual plan-tree nodes.
+
         Args:
-            query_or_batch: Either a single SQL query string or a list of SQL query strings
-            
+            query_or_batch: A single SQL string or an iterable of SQL strings.
+            num_workers: Number of parallel worker processes (default 1 = sequential).
+                         Set to os.cpu_count() or the config value for fastest throughput.
+
         Returns:
-            List of tokens for a single query, or list of token lists for a batch
+            For a single string: list of token lists (one per fragment).
+            For a batch: flat list of token lists across all queries.
         """
-        
-        processer = tqdm(query_or_batch, desc="Preprocessing SQL queries")
         if isinstance(query_or_batch, str):
-            # Return list of tokens
-            processed_string = self.tokenize(query_or_batch)
-            return processed_string.split()
-        elif isinstance(query_or_batch, (list, tuple)):
-            # Return list of token lists
-            return [self.tokenize(query).split() for query in processer]
+            return self._sql_to_sentences(query_or_batch)
+
+        batch = list(query_or_batch)
+        total_queries = len(batch)
+
+        if num_workers > 1:
+            # ------------------------------------------------------------------
+            # Parallel path — one PreprocessingPipeline instance per worker,
+            # created via the initialiser (not recreated per task).
+            # chunksize=500 amortises IPC overhead for small tasks.
+            # ------------------------------------------------------------------
+            chunksize = max(1, min(500, total_queries // (num_workers * 4)))
+            all_results: List[List[List[str]]] = []
+            with ProcessPoolExecutor(
+                max_workers=num_workers,
+                initializer=_worker_init,
+            ) as executor:
+                for result in tqdm(
+                    executor.map(_worker_process_sql, batch, chunksize=chunksize),
+                    total=total_queries,
+                    desc=f"Preprocessing SQL (workers={num_workers})",
+                ):
+                    all_results.append(result)
         else:
-            # Handle other iterables (like HuggingFace dataset columns)
-            try:
-                return [self.tokenize(str(query)).split() for query in processer]
-            except TypeError:
-                raise TypeError(f"Input must be a string or iterable of strings, got {type(query_or_batch)}")
+            # ------------------------------------------------------------------
+            # Sequential fallback (num_workers == 1)
+            # ------------------------------------------------------------------
+            all_results = [
+                self._sql_to_sentences(str(q))
+                for q in tqdm(batch, desc="Decomposing & preprocessing SQL")
+            ]
+
+        sentences = []
+        discarded = 0
+        for sents in all_results:
+            if not sents:
+                discarded += 1
+            else:
+                sentences.extend(sents)
+
+        kept = total_queries - discarded
+        avg_frags = len(sentences) / kept if kept > 0 else 0
+        avg_len = sum(len(s) for s in sentences) / len(sentences) if sentences else 0
+        print(f"\n📋 Preprocessing summary:")
+        print(f"   Total queries       : {total_queries:,}")
+        print(f"   Discarded (no frags): {discarded:,}")
+        print(f"   Kept queries        : {kept:,}")
+        print(f"   Total sub-sentences : {len(sentences):,}  (avg {avg_frags:.1f} frags/query)")
+        print(f"   Avg tokens/sentence : {avg_len:.1f}")
+        return sentences

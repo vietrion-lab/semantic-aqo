@@ -8,9 +8,9 @@ class GatingNetworkLayer(nn.Module):
     """
     Gating Network Layer to compute gating probabilities for sense selection.
     """
-    def __init__(self, sigma: float = 0.001, d: int = 300):
+    def __init__(self, pos_weight_sigma: float = 3.0, d: int = 300):
         super(GatingNetworkLayer, self).__init__()
-        self.sigma = sigma
+        self.pos_weight_sigma = pos_weight_sigma
         self.d = d
         
     def forward(self,
@@ -33,8 +33,9 @@ class GatingNetworkLayer(nn.Module):
         mask = pos != center_pos.unsqueeze(1)  # [B, T]
         context_positions = pos[mask].view(batch_size, -1)  # [B, T-1]
         
-        # Compute positional weights
-        w = torch.exp(- (context_positions - center_pos.unsqueeze(1)).abs().float() / self.sigma)  # [B, T-1]
+        # Compute positional weights: w_j = exp(-(cw - j)^2 / (2 * sigma^2))
+        diff = (context_positions - center_pos.unsqueeze(1)).float()  # [B, T-1]
+        w = torch.exp(-diff.pow(2) / (2 * self.pos_weight_sigma ** 2))  # [B, T-1]
         
         # Apply positional weights to attention
         alpha = torch.softmax(a + (w.clamp_min(1e-12).log()).unsqueeze(-1), dim=1)  # [B, T-1, K]

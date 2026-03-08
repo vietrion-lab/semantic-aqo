@@ -3,77 +3,50 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
 
-from sensate.pipeline.training.initialization import (
-    SenseEmbeddingsInitializer
-)
 from sensate.model.gating_network_layer import GatingNetworkLayer
-from sensate.pipeline.training.embedding_storage import optimize_embedding_table
 
 
 
 class Sensate(nn.Module):
     """
-    Sensate Model combining BERT-based sense embeddings with output and projection matrices.
+    Sensate Model for multi-sense word embeddings with gating network.
     """
     def __init__(
         self,
-        base_table: pd.DataFrame,
-        vocab_table: pd.DataFrame,
-        embedding_table: pd.DataFrame,
-        query_table: pd.DataFrame,
+        vocab_size: int,
         num_senses: int,
-        embedding_dim: int
+        embedding_dim: int,
+        pos_weight_sigma: float = 3.0,
+        alpha_w2v: float = 1.0,
+        alpha_orth: float = 0.15,
+        alpha_ent: float = 0.02,
+        alpha_l2: float = 0.0001,
+        label_smoothing: float = 0.1,
     ):
         super(Sensate, self).__init__()
-        self.base_table = base_table
-        self.vocab_table = vocab_table
-        # Optimize embedding table storage to save memory
-        print("🔧 Optimizing embedding table for memory efficiency...")
-        self.embedding_table = optimize_embedding_table(
-            embedding_table,
-            cache_size=10000,
-            use_float16=True  # Save 50% memory with float16
-        )
-        self.query_table = query_table
         self.num_senses = num_senses
         self.embedding_dim = embedding_dim
-        self.gating_network_layer = GatingNetworkLayer(sigma=0.001, d=embedding_dim)
+        self.alpha_w2v = alpha_w2v
+        self.alpha_orth = alpha_orth
+        self.alpha_ent = alpha_ent
+        self.alpha_l2 = alpha_l2
+        self.label_smoothing = label_smoothing
+        self.gating_network_layer = GatingNetworkLayer(pos_weight_sigma=pos_weight_sigma, d=embedding_dim)
         
-        # Initialize
-        # Convert embedding_table back to DataFrame for initialization (only temporarily)
-        embedding_df = self.embedding_table.to_dataframe()
-        sense_embeddings, updated_embedding_df = SenseEmbeddingsInitializer(
-            base_table=base_table, 
-            vocab=vocab_table, 
-            embedding=embedding_df,
-            embedding_dim=embedding_dim,
-            num_senses=num_senses
-        )()
-        
-        del self.embedding_table
-        self.embedding_table = optimize_embedding_table(
-            updated_embedding_df,
-            cache_size=10000,
-            use_float16=True
-        )
-        
-        if len(updated_embedding_df) > 0:
-            print(f"    Each Embedding Shape: {len(updated_embedding_df['embedding'].iloc[0])} dims")
-            # Check if all embedding dim not match
-            assert all(len(emb) == embedding_dim for emb in updated_embedding_df['embedding']), \
-                "All embeddings must have the correct embedding_dim"
-        
+        # Xavier/Glorot uniform initialization for sense embeddings [V, K, D]
+        sense_embeddings_tensor = torch.empty(vocab_size, num_senses, embedding_dim)
+        nn.init.xavier_uniform_(sense_embeddings_tensor.view(vocab_size * num_senses, embedding_dim))
+        sense_embeddings_tensor = sense_embeddings_tensor.view(vocab_size, num_senses, embedding_dim)
 
-        print(f"Sense Embeddings Parameter: {sense_embeddings.shape}")
-        print("=" * 20)
-
-        # Better initialization for output embeddings using Xavier/Glorot uniform
-        output_embeddings_tensor = torch.empty(vocab_table.shape[0], embedding_dim)
+        # Xavier/Glorot uniform initialization for output embeddings [V, D]
+        output_embeddings_tensor = torch.empty(vocab_size, embedding_dim)
         nn.init.xavier_uniform_(output_embeddings_tensor)
         
         # Register as trainable parameters
-        self.sense_embeddings = nn.Parameter(sense_embeddings)          # [V, K, D]
-        self.output_embeddings = nn.Parameter(output_embeddings_tensor) # [V, D]
+        self.sense_embeddings = nn.Parameter(sense_embeddings_tensor)    # [V, K, D]
+        self.output_embeddings = nn.Parameter(output_embeddings_tensor)  # [V, D]
+
+        print(f"Sense Embeddings: {self.sense_embeddings.shape}")
         print(f"Output Embeddings: {self.output_embeddings.shape}")
         print("=" * 20)
 
@@ -81,7 +54,6 @@ class Sensate(nn.Module):
                 center_pos,            # [B] - center position in each query
                 context_ids,           # [B] - context word ids (single context per sample)
                 query_token_ids,       # [B, T] - token ids for each position in the query
-                bert_embeddings        # [B, D] - BERT embeddings
     ) -> torch.Tensor:
         batch_size = query_token_ids.shape[0]
         
@@ -109,10 +81,7 @@ class Sensate(nn.Module):
         
         # Word2vec SG naive softmax loss with label smoothing
         logits = max_pooled_embedding @ self.output_embeddings.T
-        L_w2v = F.cross_entropy(logits, context_ids, reduction='mean', label_smoothing=0.1)
-
-        # Distillation loss
-        L_distill = F.mse_loss(max_pooled_embedding, bert_embeddings, reduction='mean')
+        L_w2v = F.cross_entropy(logits, context_ids, reduction='mean', label_smoothing=self.label_smoothing)
         
         # Orthogonality loss
         normalized_embeddings = F.normalize(center_sense_embeddings, p=2, dim=-1)
@@ -126,24 +95,16 @@ class Sensate(nn.Module):
         # L2 regularization
         L2_reg = sum(torch.norm(p, p=2)**2 for p in self.parameters())
         
-        # Combine losses with adjusted weights
-        alpha_w2v = 1.0
-        alpha_distill = 0.1
-        alpha_orth = 0.15    # Increased to force sense separation
-        alpha_ent = 0.02     # Increased to encourage sense diversity
-        alpha_l2 = 0.0001    # Reduced from 0.001
-        
-        total_loss = (alpha_w2v * L_w2v + 
-                     alpha_distill * L_distill + 
-                     alpha_orth * L_orth + 
-                     alpha_ent * L_ent + 
-                     alpha_l2 * L2_reg)
+        # Combine losses
+        total_loss = (self.alpha_w2v * L_w2v + 
+                     self.alpha_orth * L_orth + 
+                     self.alpha_ent * L_ent + 
+                     self.alpha_l2 * L2_reg)
         
         # Store loss components for debugging (attach to tensor)
         if hasattr(self, 'training') and self.training:
             self.last_loss_components = {
                 'L_w2v': L_w2v.item(),
-                'L_distill': L_distill.item(),
                 'L_orth': L_orth.item(),
                 'L_ent': L_ent.item(),
                 'L2_reg': L2_reg.item()
