@@ -1,6 +1,8 @@
 #include "../utils/pg_compat.h"
 #include "w2v_embedding_extractor.h"
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 typedef struct { char *word; int id; } VocabEntry;
 static VocabEntry *g_v = NULL;
@@ -25,27 +27,18 @@ bool init_embedding_extractor(const char *v_p, const char *e_p, int k, int d) {
     FILE *fe = fopen(e_p, "rb");
     if (!fe) return false;
     int32_t tr, fd; fread(&tr, 4, 1, fe); fread(&fd, 4, 1, fe);
-    g_k = k; g_d = fd; g_size = n;
-    g_e = palloc0((size_t)n * k * fd * sizeof(float));
-    float *tmp = palloc(fd * sizeof(float));
+    g_k = k; g_d = d; g_size = n;
+    g_e = palloc0((size_t)n * d * sizeof(float));
+    float *tmp = palloc(d * sizeof(float));
     for (int r = 0; r < tr; r++) {
         int32_t wl; fread(&wl, 4, 1, fe); fseek(fe, wl, SEEK_CUR);
-        int32_t sid; fread(&sid, 4, 1, fe); fread(tmp, 4, fd, fe);
+        int32_t sid; fread(&sid, 4, 1, fe); fread(tmp, 4, d, fe);
         int wid = r / k;
-        if (wid < n && sid < k) memcpy(g_e + (wid * k + sid) * fd, tmp, fd * sizeof(float));
+        /* Chỉ lấy sense đầu tiên (sid == 0) để tránh đa nghĩa */
+        if (wid < n && sid == 0) memcpy(g_e + (wid * d), tmp, d * sizeof(float));
     }
     pfree(tmp); fclose(fe);
     g_init = true; return true;
-}
-
-float* extractor_compute_fair_average(const float *agg_vec, int num_words, int d) {
-    if (!agg_vec || num_words <= 0) return NULL;
-    float *query_vec = palloc0(d * sizeof(float));
-    for (int w = 0; w < num_words; w++) {
-        for (int i = 0; i < d; i++) query_vec[i] += agg_vec[w * d + i];
-    }
-    for (int i = 0; i < d; i++) query_vec[i] /= (float)num_words;
-    return query_vec;
 }
 
 int extractor_get_word_id(const char *w) {
@@ -53,8 +46,8 @@ int extractor_get_word_id(const char *w) {
     return -1;
 }
 
-const float* extractor_get_sense_embeddings(int wid) {
-    return (wid < 0 || wid >= g_size) ? NULL : g_e + (wid * g_k * g_d);
+const float* extractor_get_word_embedding(int wid) {
+    return (wid < 0 || wid >= g_size) ? NULL : g_e + (wid * g_d);
 }
 
 void free_embedding_extractor() {
@@ -64,5 +57,4 @@ void free_embedding_extractor() {
 }
 
 int extractor_get_dim() { return g_d; }
-int extractor_get_num_senses() { return g_k; }
 bool extractor_is_loaded() { return g_init; }
